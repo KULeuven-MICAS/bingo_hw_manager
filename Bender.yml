@@ -1,0 +1,21 @@
+package:
+  name: bingo_hw_manager
+  authors:
+    - Fanchen Kong <fanchen.kong@kuleuven.be>
+    - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
+    - Yunhao Deng  <yunhao.deng@kuleuven.be>
+dependencies:
+  axi:          { git: https://github.com/pulp-platform/axi,              version:  0.39.1 }
+  common_cells: { git: https://github.com/pulp-platform/common_cells.git, version:  1.37.0 }
+
+sources:
+  # Source files grouped in levels. Files in level 0 have no dependencies on files in this package.
+  # Files in level 1 only depend on files in level 0.
+  # Files in level 2 on files in levels 1 and 0, etc.
+
+  # Level 0
+  - src/bingo_hw_manager_dep_matrix.sv
+
+  - target: bingo_hw_manager_test
+    files:
+      - test/tb_bingo_hw_manager_dep_matrix.sv

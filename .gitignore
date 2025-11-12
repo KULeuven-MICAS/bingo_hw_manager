@@ -1,0 +1,9 @@
+.bender/
+build/
+*.log
+Bender.lock
+transcript
+*.wlf
+work-vsim/
+tb/
+

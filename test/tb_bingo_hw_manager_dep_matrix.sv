@@ -10,33 +10,31 @@ module tb_bingo_hw_manager_dep_matrix();
     logic clk_i;
     logic rst_ni;
 
-    // DUT signals
-    logic [INPUT_WIDTH-1:0]   dep_check_idx_i;
-    logic [N-1:0]            dep_check_code_i;
-    logic                    dep_check_valid_i;
-    logic                    dep_check_result_o;
-    logic [INPUT_WIDTH-1:0]   dep_set_idx_i;
-    logic [N-1:0]            dep_set_code_i;
-    logic                    dep_set_valid_i;
+    // DUT signals (match new DUT interface)
+    logic [N-1:0]                      dep_check_valid_i;
+    logic [N-1:0]                      dep_check_result_o;
+    logic [N-1:0]                      dep_set_valid_i;
+
+    // arrays of vectors: indexed by row/column, each element is N-bit wide
+    logic [N-1:0]                      dep_check_code_i [N-1:0];
+    logic [N-1:0]                      dep_set_code_i   [N-1:0];
 
     // helper variables
     logic [INPUT_WIDTH-1:0] col;
     logic [N-1:0]           pattern;
     logic [N-1:0]           expected_row;
 
-    // Instantiate DUT (connect new valid signals)
+    // Instantiate DUT
     bingo_hw_manager_dep_matrix #(
         .DEP_MATRIX_N(N)
     ) dut (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .dep_check_idx_i(dep_check_idx_i),
-        .dep_check_code_i(dep_check_code_i),
         .dep_check_valid_i(dep_check_valid_i),
+        .dep_check_code_i(dep_check_code_i),
         .dep_check_result_o(dep_check_result_o),
-        .dep_set_idx_i(dep_set_idx_i),
-        .dep_set_code_i(dep_set_code_i),
-        .dep_set_valid_i(dep_set_valid_i)
+        .dep_set_valid_i(dep_set_valid_i),
+        .dep_set_code_i(dep_set_code_i)
     );
 
     // Clock generator: 10 ns period
@@ -44,70 +42,73 @@ module tb_bingo_hw_manager_dep_matrix();
     always #5 clk_i = ~clk_i;
 
     // Task: drive a column write (synchronous in DUT)
-    // Note: inputs change only at posedge as requested. DUT samples at the following posedge.
-    task automatic set_column(input logic [INPUT_WIDTH-1:0] col_in,
+    task automatic set_column(input int unsigned col_in,
                               input logic [N-1:0] code);
     begin
-        // update inputs at a clock edge
-        @(posedge clk_i);
-        dep_set_idx_i   <= col_in;
-        dep_set_code_i  <= code;
-        dep_set_valid_i <= 1'b1;
+        // prepare arrays: clear all entries, then assign selected column entry
+        for (int i = 0; i < N; i++) begin
+            dep_set_code_i[i] = '0;
+        end
 
-        // wait one full clock so DUT samples these values on the next posedge
+        // apply at clock edge
         @(posedge clk_i);
-        #1; // small settle for any combinational outputs if needed
+        dep_set_code_i[col_in]  <= code;
+        dep_set_valid_i         <= {N{1'b0}};
+        dep_set_valid_i[col_in] <= 1'b1;
 
-        // clear inputs at a clock edge (keep changes aligned to clock edges)
+        // allow DUT to sample on next posedge (synchronous update)
         @(posedge clk_i);
-        dep_set_valid_i <= 1'b0;
-        dep_set_code_i  <= '0;
-        dep_set_idx_i   <= '0;
+        #1;
+
+        // clear signals on next posedge
+        @(posedge clk_i);
+        dep_set_valid_i         <= '0;
+        for (int i = 0; i < N; i++) dep_set_code_i[i] <= '0;
     end
     endtask
 
-    // Task: check a row against expected code (combinational output)
-    // Note: check signals are applied at a posedge, result read within the same cycle (after a small delay).
-    task automatic check_row(input logic [INPUT_WIDTH-1:0] row,
+    // Task: check a single row (combinational result)
+    task automatic check_row(input int unsigned row,
                              input logic [N-1:0] expected_code,
                              input bit expected_result);
     begin
-        // apply check inputs at a clock edge
-        @(posedge clk_i);
-        dep_check_idx_i   <= row;
-        dep_check_code_i  <= expected_code;
-        dep_check_valid_i <= 1'b1;
+        // prepare all check_code entries to zero, then set target row value
+        for (int i = 0; i < N; i++) dep_check_code_i[i] = '0;
 
-        // allow combinational result to settle in the same cycle
+        @(posedge clk_i);
+        dep_check_code_i[row]   <= expected_code;
+        dep_check_valid_i       <= {N{1'b0}};
+        dep_check_valid_i[row]  <= 1'b1;
+
+        // allow combinational result to settle within the same cycle
         #1;
-        if (dep_check_result_o !== expected_result) begin
+        if (dep_check_result_o[row] !== expected_result) begin
             $error("CHECK FAILED: row=%0d expected_code=%b expected_res=%0d got_res=%0d",
-                   row, expected_code, expected_result, dep_check_result_o);
+                   row, expected_code, expected_result, dep_check_result_o[row]);
             $fatal;
         end else begin
-            $display("CHECK OK: row=%0d code=%b result=%0d", row, expected_code, dep_check_result_o);
+            $display("CHECK OK: row=%0d code=%b result=%0d", row, expected_code, dep_check_result_o[row]);
         end
 
-        // clear check inputs at next clock edge
+        // clear at next clock
         @(posedge clk_i);
-        dep_check_valid_i <= 1'b0;
-        dep_check_code_i  <= '0;
-        dep_check_idx_i   <= '0;
+        dep_check_valid_i[row] <= 1'b0;
+        dep_check_code_i[row]  <= '0;
     end
     endtask
 
     // Test sequence
     initial begin
         // initialize inputs and valids
-        dep_check_idx_i   = '0;
-        dep_check_code_i  = '0;
-        dep_check_valid_i = 1'b0;
-        dep_set_idx_i     = '0;
-        dep_set_code_i    = '0;
-        dep_set_valid_i   = 1'b0;
-        col               = '0;
-        pattern           = '0;
-        expected_row      = '0;
+        for (int i = 0; i < N; i++) begin
+            dep_check_code_i[i] = {N{1'b0}}; // Initialize to all zeros
+            dep_set_code_i[i]   = {N{1'b0}}; // Initialize to all zeros
+        end
+        dep_check_valid_i = {N{1'b0}}; // Initialize to all zeros
+        dep_set_valid_i   = {N{1'b0}}; // Initialize to all zeros
+        col               = '0;        // Initialize to zero
+        pattern           = '0;        // Initialize to zero
+        expected_row      = '0;        // Initialize to zero
 
         // apply reset (active low)
         rst_ni = 1'b0;
@@ -120,7 +121,7 @@ module tb_bingo_hw_manager_dep_matrix();
 
         // After reset DUT matrix should be zeros => checking row with zero code should pass
         for (int i = 0; i < N; i++) begin
-            check_row(i, '0, 1'b1); // row == 0 should match code 0 -> result 1
+            check_row(i, {N{1'b0}}, 1'b1); // row == 0 should match code 0 -> result 1
         end
 
         // Set column 1 to pattern 4'b1010 (bit index => row index)

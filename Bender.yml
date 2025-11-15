@@ -14,8 +14,15 @@ sources:
   # Files in level 2 on files in levels 1 and 0, etc.
 
   # Level 0
-  - src/bingo_hw_manager_dep_matrix.sv
+  - src/bingo_hw_manager_mailbox_adapter.sv   # AXI Lite to Mailbox Adapter
+  - src/bingo_hw_manager_read_mailbox.sv      # AXI Lite read Mailbox Module
+  - src/bingo_hw_manager_write_mailbox.sv     # AXI Lite write Mailbox Module
+  # Level 1
+  - src/bingo_hw_manager_dep_matrix.sv        # Dependency Matrix Module
+  # Level 2
+  - src/bingo_hw_manager_top.sv               # Top-level module
 
-  - target: bingo_hw_manager_test
+  - target: test
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv
+      - test/tb_bingo_hw_manager_top.sv

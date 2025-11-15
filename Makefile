@@ -8,8 +8,8 @@ BENDER        ?= bender
 TB_DIR        ?= tb
 TEST_DIR      ?= test
 VSIM_BUILDDIR ?= work-vsim
-TB            ?= bingo_hw_manager_dep_matrix
-TBS           ?= bingo_hw_manager_dep_matrix
+TB            ?= bingo_hw_manager_top
+TBS           ?= bingo_hw_manager_top
 
 SIM_TARGETS := $(addsuffix .log,$(addprefix sim-,$(TBS)))
 
@@ -20,8 +20,8 @@ help:
 	@echo "compile.log:  compile files using Questasim"
 	@echo "sim-#TB#.log: simulates a given testbench, available TBs are:"
 	@echo "$(addprefix ###############-#,$(TBS))" | sed -e 's/ /\n/g' | sed -e 's/#/ /g'
-	@echo "sim_all:      simulates all available testbenches"
-	@echo "sim_gui:      simulates the specified TB with gui"
+	@echo "sim_all:      simulates all available testbenches using the /scripts/run_vsim.sh script"
+	@echo "sim_gui:      simulates the specified TB with gui for debugging"
 	@echo ""
 	@echo "clean:        cleans generated files"
 	@echo ""
@@ -45,7 +45,7 @@ sim_gui: $(TB_DIR)/${TB}.vsim.gui
 	$(TB_DIR)/${TB}.vsim.gui
 
 VSIM_BENDER_TARGET = -t simulation
-VSIM_BENDER_TARGET += -t bingo_hw_manager_test
+VSIM_BENDER_TARGET += -t test
 
 VLOG_FLAGS += -svinputport=compat
 VLOG_FLAGS += -timescale 1ns/1ps

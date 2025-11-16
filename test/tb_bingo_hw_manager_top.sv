@@ -341,8 +341,10 @@ module tb_bingo_hw_manager_top;
 
     forever begin
       $display("%0t READY[%0d,%0d] polling for new task...", $time, core, cluster);
+      fork 
       ready_drv[idx].send_ar(status_addr, '0);
       ready_drv[idx].recv_r(status, resp);
+      join_none
       $display("%0t READY[%0d,%0d] status: 0x%0h", $time, core, cluster, status);
       repeat (5) @(posedge clk_i);
       if (status[0]) begin
@@ -351,10 +353,11 @@ module tb_bingo_hw_manager_top;
         continue;
       end
       $display("%0t READY[%0d,%0d] task available, reading...", $time, core, cluster);
+      fork
       ready_drv[idx].send_ar(data_addr, '0);
       ready_drv[idx].recv_r(data, resp);
-      ready_drv[idx].send_ar(data_addr, '0);
-      ready_drv[idx].recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
       $display("%0t READY[%0d,%0d] recvs task_id %0d",
               $time, core, cluster, data[TaskIdWidth-1:0]);
       $display("%0t READY[%0d,%0d] doing some work....",

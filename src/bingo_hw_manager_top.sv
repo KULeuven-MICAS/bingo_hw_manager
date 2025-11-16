@@ -444,7 +444,7 @@ module bingo_hw_manager_top #(
         // For the dummy tasks, we need the stream_filter to drop the task from ready queue and checkout queue
         // Drop the dummy tasks for ready queue
         stream_filter i_stream_filter_for_dummy_tasks_to_ready_queue (
-            .valid_i ( stream_fork_oup_valid[core][1]    ),
+            .valid_i ( stream_fork_oup_valid[core][1] && stream_fork_oup_ready[core][0]  ), // make sure the dep matrix check is done
             .ready_o ( stream_fork_oup_ready[core][1]    ),
             .drop_i  ( waiting_dep_check_task_desc[core].is_dummy && ~waiting_dep_check_task_desc[core].dep_set_info.dep_set_en),
             .valid_o ( demux_ready_queue_inp_valid[core] ),
@@ -463,7 +463,7 @@ module bingo_hw_manager_top #(
 
         // Drop the dummy tasks for checkout queue
         stream_filter i_stream_filter_for_dummy_tasks_to_checkout_queue (
-            .valid_i ( stream_fork_oup_valid[core][2]       ),
+            .valid_i ( stream_fork_oup_valid[core][2] && stream_fork_oup_ready[core][0]   ), // make sure the dep matrix check is done
             .ready_o ( stream_fork_oup_ready[core][2]       ),
             .drop_i  ( waiting_dep_check_task_desc[core].is_dummy && ~waiting_dep_check_task_desc[core].dep_set_info.dep_set_en),
             .valid_o ( demux_checkout_queue_inp_valid[core] ),

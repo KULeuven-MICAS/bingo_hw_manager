@@ -173,6 +173,7 @@ module bingo_hw_manager_mailbox_adapter #(
 
     // Check if there is a pending read request on the slave port.
     if (slv_req_i.ar_valid) begin
+      r_valid = 1'b1;
       // set the right read channel output depending on the address decoding
       if (dec_r_valid) begin
         // when decode not valid, send the default slaveerror
@@ -203,10 +204,10 @@ module bingo_hw_manager_mailbox_adapter #(
           IRQEN: r_chan = '{data: data_t'( irqen_q  ), resp: axi_pkg::RESP_OKAY};
           IRQP:  r_chan = '{data: data_t'( irqp_q   ), resp: axi_pkg::RESP_OKAY};
           CTRL:  r_chan = '{data: data_t'( ctrl_q   ), resp: axi_pkg::RESP_OKAY};
-          default: /*do nothing*/;
+          default: r_chan = '{data: data_t'( 32'hDEADBEEF ), resp: axi_pkg::RESP_SLVERR};
         endcase
       end
-      r_valid = 1'b1;
+      
       if (r_ready) begin
         slv_resp_o.ar_ready = 1'b1;
       end
@@ -314,18 +315,12 @@ module bingo_hw_manager_mailbox_adapter #(
     .en_default_idx_i ( 1'b0              ),
     .default_idx_i    ( '0                )
   );
-  spill_register #(
-    .T ( b_chan_lite_t )
-  ) i_b_chan_outp (
-    .clk_i,
-    .rst_ni,
-    .valid_i ( b_valid            ),
-    .ready_o ( b_ready            ),
-    .data_i  ( b_chan             ),
-    .valid_o ( slv_resp_o.b_valid ),
-    .ready_i ( slv_req_i.b_ready  ),
-    .data_o  ( slv_resp_o.b       )
-  );
+
+  always_comb begin : compose_b_channel
+    b_ready = slv_req_i.b_ready;
+    slv_resp_o.b.resp = b_chan.resp;
+    slv_resp_o.b_valid = b_valid;
+  end
   addr_decode #(
     .NoIndices( NoRegs ),
     .NoRules  ( NoRegs ),
@@ -340,18 +335,12 @@ module bingo_hw_manager_mailbox_adapter #(
     .en_default_idx_i ( 1'b0              ),
     .default_idx_i    ( '0                )
   );
-  spill_register #(
-    .T ( r_chan_lite_t )
-  ) i_r_chan_outp (
-    .clk_i,
-    .rst_ni,
-    .valid_i ( r_valid            ),
-    .ready_o ( r_ready            ),
-    .data_i  ( r_chan             ),
-    .valid_o ( slv_resp_o.r_valid ),
-    .ready_i ( slv_req_i.r_ready  ),
-    .data_o  ( slv_resp_o.r       )
-  );
+  always_comb begin : compose_r_channel
+    r_ready = slv_req_i.r_ready;
+    slv_resp_o.r.resp = r_chan.resp;
+    slv_resp_o.r.data = r_chan.data;
+    slv_resp_o.r_valid = r_valid;
+  end
   // pragma translate_off
   `ifndef VERILATOR
   initial begin : proc_check_params

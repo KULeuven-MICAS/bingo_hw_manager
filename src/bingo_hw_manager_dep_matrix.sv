@@ -23,6 +23,7 @@ module bingo_hw_manager_dep_matrix #(
     // dependency matrix: dep_matrix_q[row][col]
     logic [DEP_MATRIX_N-1:0] dep_matrix_n [DEP_MATRIX_N-1:0];
     logic [DEP_MATRIX_N-1:0] dep_matrix_q [DEP_MATRIX_N-1:0];
+    logic [DEP_MATRIX_N-1:0] dep_matrix_clear_row;
 
     // Combinational next-state: start from current and apply simultaneous column writes.
     always_comb begin
@@ -43,11 +44,17 @@ module bingo_hw_manager_dep_matrix #(
     // Synchronous update of stored matrix
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
-            for (int r = 0; r < DEP_MATRIX_N; r = r + 1)
+            for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
                 dep_matrix_q[r] <= '0;
+            end
         end else begin
-            for (int r = 0; r < DEP_MATRIX_N; r = r + 1)
-                dep_matrix_q[r] <= dep_matrix_n[r];
+            for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
+                if(dep_matrix_clear_row[r]) begin
+                    dep_matrix_q[r] <= '0;
+                end else begin
+                    dep_matrix_q[r] <= dep_matrix_n[r];
+                end
+            end
         end
     end
 
@@ -61,5 +68,14 @@ module bingo_hw_manager_dep_matrix #(
                 dep_check_result_o[r] = 1'b0;
         end
     end
-
+    // Connect the clear row logic
+    // When a row r is checked and the result is true, clear that row in the next cycle
+    always_comb begin
+        dep_matrix_clear_row = '0;
+        for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
+            if (dep_check_valid_i[r] && dep_check_result_o[r]) begin
+                dep_matrix_clear_row[r] = 1'b1;
+            end
+        end
+    end
 endmodule

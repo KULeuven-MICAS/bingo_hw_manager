@@ -3,76 +3,73 @@
 // - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 module bingo_hw_manager_dep_matrix #(
-    // DEP_MATRIX_N: input/output of the dep matrix
-    // Num of entries is DEP_MATRIX_N x DEP_MATRIX_N
-    parameter int unsigned DEP_MATRIX_N = 4,
+    // Number of rows (producer)
+    parameter int unsigned DEP_MATRIX_ROWS = 4,
+    // Number of columns (consumer)
+    parameter int unsigned DEP_MATRIX_COLS = 4,
     /// Dependent parameters, DO NOT OVERRIDE!
-    parameter int unsigned INPUT_WIDTH = $clog2(DEP_MATRIX_N),
-    parameter type dep_check_code_t = logic [DEP_MATRIX_N-1:0],
-    parameter type dep_set_code_t   = logic [DEP_MATRIX_N-1:0]
+    // pattern to check per row
+    parameter type dep_check_code_t = logic [DEP_MATRIX_COLS-1:0],
+    // pattern to write per column
+    parameter type dep_set_code_t   = logic [DEP_MATRIX_ROWS-1:0]
     
 ) (
     input  logic   clk_i,
     input  logic   rst_ni,
-    input  logic            [DEP_MATRIX_N-1:0] dep_check_valid_i,
-    input  dep_check_code_t [DEP_MATRIX_N-1:0] dep_check_code_i,
-    output logic            [DEP_MATRIX_N-1:0] dep_check_result_o,
-    input  logic            [DEP_MATRIX_N-1:0] dep_set_valid_i,
-    input  dep_set_code_t   [DEP_MATRIX_N-1:0] dep_set_code_i
+    // Row check interface
+    input  logic              [DEP_MATRIX_ROWS-1:0] dep_check_valid_i,
+    input  dep_check_code_t   [DEP_MATRIX_ROWS-1:0] dep_check_code_i,
+    output logic              [DEP_MATRIX_ROWS-1:0] dep_check_result_o,
+    // Column set interface
+    input  logic              [DEP_MATRIX_COLS-1:0] dep_set_valid_i,
+    input  dep_set_code_t     [DEP_MATRIX_COLS-1:0] dep_set_code_i
 );
     // dependency matrix: dep_matrix_q[row][col]
-    logic [DEP_MATRIX_N-1:0] dep_matrix_n [DEP_MATRIX_N-1:0];
-    logic [DEP_MATRIX_N-1:0] dep_matrix_q [DEP_MATRIX_N-1:0];
-    logic [DEP_MATRIX_N-1:0] dep_matrix_clear_row;
+    logic [DEP_MATRIX_ROWS-1:0][DEP_MATRIX_COLS-1:0] dep_matrix_d, dep_matrix_q;
+    logic [DEP_MATRIX_ROWS-1:0]                      dep_matrix_clear_row;
 
-    // Combinational next-state: start from current and apply simultaneous column writes.
+    // Compute next-state with per-column write
     always_comb begin
-        // default copy current state
-        for (int r = 0; r < DEP_MATRIX_N; r = r + 1)
-            dep_matrix_n[r] = dep_matrix_q[r];
-
-        // If any set valid bits, update all selected columns simultaneously.
-        for (int c = 0; c < DEP_MATRIX_N; c = c + 1) begin
+        dep_matrix_d = dep_matrix_q;
+        for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
             if (dep_set_valid_i[c]) begin
-                // dep_set_code_i[c] is a vector [DEP_MATRIX_N-1:0], bit r -> value for row r at column c
-                for (int r = 0; r < DEP_MATRIX_N; r = r + 1)
-                    dep_matrix_n[r][c] = dep_set_code_i[c][r];
-            end
-        end
-    end
-
-    // Synchronous update of stored matrix
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
-                dep_matrix_q[r] <= '0;
-            end
-        end else begin
-            for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
-                if(dep_matrix_clear_row[r]) begin
-                    dep_matrix_q[r] <= '0;
-                end else begin
-                    dep_matrix_q[r] <= dep_matrix_n[r];
+                // Write column 'c' with the per-row bits from dep_set_code_i[c]
+                for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
+                    dep_matrix_d[r][c] = dep_set_code_i[c][r];
                 end
             end
         end
     end
 
-    // Simultaneous per-row checks: when dep_check_valid_i[r] is asserted, compare row r against dep_check_code_i[r]
-    always_comb begin
-        dep_check_result_o = '0;
-        for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
-            if (dep_check_valid_i[r])
-                dep_check_result_o[r] = (dep_matrix_q[r] == dep_check_code_i[r]);
-            else
-                dep_check_result_o[r] = 1'b0;
+    // Sequential update with optional row clear on successful check
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            dep_matrix_q <= '0;
+        end else begin
+            for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
+                if (dep_matrix_clear_row[r]) begin
+                    dep_matrix_q[r] <= '0;
+                end else begin
+                    dep_matrix_q[r] <= dep_matrix_d[r];
+                end
+            end
         end
     end
-    // Connect the clear row logic
-    // When a row r is checked and the result is true, clear that row in the next cycle
+
+    // Row check: compare stored row against dep_check_code_i[r] when valid
+    always_comb begin
+        dep_check_result_o = '0;
+        for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
+            if (dep_check_valid_i[r]) begin
+                dep_check_result_o[r] = (dep_matrix_q[r] == dep_check_code_i[r]);
+            end
+        end
+    end
+
+    // Clear rows that matched (valid and equal)
     always_comb begin
         dep_matrix_clear_row = '0;
-        for (int r = 0; r < DEP_MATRIX_N; r = r + 1) begin
+        for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
             if (dep_check_valid_i[r] && dep_check_result_o[r]) begin
                 dep_matrix_clear_row[r] = 1'b1;
             end

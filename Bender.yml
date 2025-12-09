@@ -19,9 +19,10 @@ sources:
   - src/bingo_hw_manager_write_mailbox.sv     # AXI Lite write Mailbox Module
   # Level 1
   - src/bingo_hw_manager_dep_matrix.sv        # Dependency Matrix Module
+  - src/bingo_hw_manager_dep_check_sum.sv     # Dependency Checksum Module for H2H Dep Check
+  - src/bingo_hw_manager_h2h_dep_set.sv       # H2H Dependency Set Module (The Master port to send H2H dep set info to other chiplets)
   # Level 2
   - src/bingo_hw_manager_top.sv               # Top-level module
-
   - target: test
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv

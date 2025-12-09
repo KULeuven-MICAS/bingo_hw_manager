@@ -26,7 +26,8 @@ module tb_bingo_hw_manager_dep_matrix();
 
     // Instantiate DUT
     bingo_hw_manager_dep_matrix #(
-        .DEP_MATRIX_N(N)
+        .DEP_MATRIX_ROWS(N),
+        .DEP_MATRIX_COLS(N)
     ) dut (
         .clk_i(clk_i),
         .rst_ni(rst_ni),

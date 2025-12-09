@@ -11,6 +11,7 @@ module tb_bingo_hw_manager_top;
     // ---------------------------------------------------------------------------
     // Local configuration
     // ---------------------------------------------------------------------------
+    localparam int unsigned NUM_CHIPLET = 4;
     localparam int unsigned NUM_CORES_PER_CLUSTER    = 3;
     localparam int unsigned NUM_CLUSTERS_PER_CHIPLET = 2;
     localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
@@ -29,8 +30,10 @@ module tb_bingo_hw_manager_top;
     localparam host_axi_lite_addr_t DONE_QUEUE_BASE  = 48'h2000_0000;
     localparam host_axi_lite_addr_t READY_QUEUE_BASE = 48'h3000_0000;
     localparam host_axi_lite_addr_t READY_QUEUE_STRIDE = 48'h1000; // 4 KiB
+    localparam host_axi_lite_addr_t H2H_DONE_QUEUE_BASE = 48'h4000_0000;
 
     localparam int unsigned TaskIdWidth = 16;
+    typedef logic [NUM_CHIPLET-1:0                     ] bingo_hw_manager_chiplet_check_code_t;
     typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0   ] bingo_hw_manager_task_type_t;
     typedef logic [0:0                                 ] bingo_hw_manager_dummy_t;
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
@@ -42,6 +45,8 @@ module tb_bingo_hw_manager_top;
         logic                                        dep_check_en;
         bingo_hw_manager_dep_code_t                  dep_check_code;
         bingo_hw_manager_cluster_id_t                dep_check_cluster_idx;
+        logic                                        dep_check_chiplet_en;
+        bingo_hw_manager_chiplet_check_code_t        dep_check_chiplet_code;
     } bingo_hw_manager_dep_check_info_t;
 
     // Dependency set info struct
@@ -119,6 +124,12 @@ module tb_bingo_hw_manager_top;
   AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
                 .AXI_DATA_WIDTH(HOST_DW)
   ) host_if (.clk_i(clk_i));
+
+  // AXI-Lite virtual interfaces
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
+                .AXI_DATA_WIDTH(HOST_DW)
+  ) h2h_done_if (.clk_i(clk_i));
+
   AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
                 .AXI_DATA_WIDTH(DEV_DW )
   ) done_if (.clk_i(clk_i));
@@ -131,6 +142,9 @@ module tb_bingo_hw_manager_top;
   host_req_t task_queue_req;
   host_resp_t task_queue_resp;
 
+  host_req_t h2h_done_queue_req;
+  host_resp_t h2h_done_queue_resp;
+
   dev_req_t done_queue_req;
   dev_resp_t done_queue_resp;
 
@@ -140,6 +154,9 @@ module tb_bingo_hw_manager_top;
   // Interface<->struct hookups
   `AXI_LITE_ASSIGN_TO_REQ  (task_queue_req , host_if);
   `AXI_LITE_ASSIGN_FROM_RESP(host_if      , task_queue_resp);
+
+  `AXI_LITE_ASSIGN_TO_REQ  (h2h_done_queue_req , h2h_done_if);
+  `AXI_LITE_ASSIGN_FROM_RESP(h2h_done_if      , h2h_done_queue_resp);
 
   `AXI_LITE_ASSIGN_TO_REQ  (done_queue_req , done_if);
   `AXI_LITE_ASSIGN_FROM_RESP(done_if      , done_queue_resp);
@@ -169,31 +186,37 @@ module tb_bingo_hw_manager_top;
   end
 
   bingo_hw_manager_top #(
+    .NUM_CHIPLET              (NUM_CHIPLET              ),
     .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
     .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
     .HostAxiLiteAddrWidth     (HOST_AW                  ),
     .HostAxiLiteDataWidth     (HOST_DW                  ),
     .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
     .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-    .task_queue_axi_lite_in_req_t  (host_req_t ),
-    .task_queue_axi_lite_in_resp_t (host_resp_t),
-    .done_queue_axi_lite_in_req_t  (dev_req_t  ),
-    .done_queue_axi_lite_in_resp_t (dev_resp_t ),
-    .ready_queue_axi_lite_in_req_t (dev_req_t ),
-    .ready_queue_axi_lite_in_resp_t(dev_resp_t)
+    .task_queue_axi_lite_in_req_t     (host_req_t ),
+    .task_queue_axi_lite_in_resp_t    (host_resp_t),
+    .h2h_done_queue_axi_lite_in_req_t (host_req_t ),
+    .h2h_done_queue_axi_lite_in_resp_t(host_resp_t),
+    .done_queue_axi_lite_in_req_t     (dev_req_t  ),
+    .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
+    .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
+    .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
   ) dut (
-    .clk_i                    (clk_i               ),
-    .rst_ni                   (rst_ni              ),
-    .chip_id_i                ('0                  ),
-    .task_queue_base_addr_i   (TASK_QUEUE_BASE     ),
-    .task_queue_axi_lite_req_i(task_queue_req      ),
-    .task_queue_axi_lite_resp_o(task_queue_resp    ),
-    .done_queue_base_addr_i   (DONE_QUEUE_BASE     ),
-    .done_queue_axi_lite_req_i(done_queue_req      ),
-    .done_queue_axi_lite_resp_o(done_queue_resp    ),
-    .ready_queue_base_addr_i  (ready_base_addr_2d  ),
-    .ready_queue_axi_lite_req_i(ready_queue_req    ),
-    .ready_queue_axi_lite_resp_o(ready_queue_resp  )
+    .clk_i                         (clk_i               ),
+    .rst_ni                        (rst_ni              ),
+    .chip_id_i                     ('0                  ),
+    .task_queue_base_addr_i        (TASK_QUEUE_BASE     ),
+    .task_queue_axi_lite_req_i     (task_queue_req      ),
+    .task_queue_axi_lite_resp_o    (task_queue_resp     ),
+    .h2h_done_queue_base_addr_i    (H2H_DONE_QUEUE_BASE ),
+    .h2h_done_queue_axi_lite_req_i (h2h_done_queue_req  ),
+    .h2h_done_queue_axi_lite_resp_o(h2h_done_queue_resp ),
+    .done_queue_base_addr_i        (DONE_QUEUE_BASE     ),
+    .done_queue_axi_lite_req_i     (done_queue_req      ),
+    .done_queue_axi_lite_resp_o    (done_queue_resp     ),
+    .ready_queue_base_addr_i       (ready_base_addr_2d  ),
+    .ready_queue_axi_lite_req_i    (ready_queue_req     ),
+    .ready_queue_axi_lite_resp_o   (ready_queue_resp    )
   );
 
 
@@ -201,6 +224,13 @@ module tb_bingo_hw_manager_top;
     .AW(HOST_AW),
     .DW(HOST_DW)
   ) host_drv = new(host_if);
+
+  axi_lite_driver #(
+    .AW(HOST_AW),
+    .DW(HOST_DW)
+  ) h2h_done_drv = new(h2h_done_if);
+
+  initial h2h_done_drv.reset_master();
 
   axi_lite_driver #(
     .AW(DEV_AW),
@@ -233,6 +263,8 @@ module tb_bingo_hw_manager_top;
     input logic                         dep_check_en,
     input bingo_hw_manager_dep_code_t   dep_check_code,
     input bingo_hw_manager_cluster_id_t dep_check_cluster_idx,
+    input logic                         dep_check_chiplet_en,
+    input bingo_hw_manager_chiplet_check_code_t dep_check_chiplet_code,
     input logic                         dep_set_en,
     input bingo_hw_manager_dep_code_t   dep_set_code,
     input bingo_hw_manager_cluster_id_t dep_set_cluster_idx
@@ -244,6 +276,8 @@ module tb_bingo_hw_manager_top;
     tmp.dep_check_info.dep_check_en      = dep_check_en;
     tmp.dep_check_info.dep_check_code    = dep_check_code;
     tmp.dep_check_info.dep_check_cluster_idx = dep_check_cluster_idx;
+    tmp.dep_check_info.dep_check_chiplet_en = dep_check_chiplet_en;
+    tmp.dep_check_info.dep_check_chiplet_code = dep_check_chiplet_code;
     tmp.dep_set_info.dep_set_en          = dep_set_en;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
     tmp.dep_set_info.dep_set_cluster_idx = dep_set_cluster_idx;
@@ -276,6 +310,8 @@ module tb_bingo_hw_manager_top;
                        1'b0,    // dep check en
                        3'b000,      // dep check code
                        1'd0,      // dep check cluster idx
+                       1'b0,    // dep check chiplet_en
+                       4'd0,    // dep check chiplet_code
                        1'b1,    // dep set en
                        3'b010, // dep set code (set core 1)
                        1'd0       // dep set cluster idx
@@ -286,6 +322,8 @@ module tb_bingo_hw_manager_top;
                        1'b1,    // dep check en
                        3'b001, // dep check code (wait for core 0)
                        1'd0,      // dep check cluster idx (cluster 0)
+                       1'b0,    // dep check chiplet_en
+                       4'd0,    // dep check chiplet_code
                        1'b1,    // dep set en
                        3'b100,   // dep set code (set core 2)
                        1'd1       // dep set cluster idx (cluster 1)
@@ -296,6 +334,8 @@ module tb_bingo_hw_manager_top;
                        1'b1,    // dep check en
                        3'b010,  // dep check code (wait for core 1)
                        '0,      // dep check cluster idx (cluster 0)
+                       1'b0,    // dep check chiplet_en
+                       4'd0,    // dep check chiplet_code
                        1'b0,    // dep set en
                        '0,      // dep set code
                        '0       // dep set cluster idx

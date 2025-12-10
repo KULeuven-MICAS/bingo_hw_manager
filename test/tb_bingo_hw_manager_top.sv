@@ -210,13 +210,13 @@ module tb_bingo_hw_manager_top;
   end
 
   // Local Ready Queue interface
-  dev_req_t  [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] ready_queue_req ;
-  dev_resp_t [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] ready_queue_resp;
+  dev_req_t  [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] local_ready_queue_req ;
+  dev_resp_t [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] local_ready_queue_resp;
   // Connect the wires to if
   for (genvar chip_idx=0; chip_idx<NUM_CHIPLET; chip_idx++) begin : gen_ready_queue_if_connect_chiplet
     for (genvar agent_idx=0; agent_idx<READY_AGENT_NUM; agent_idx++) begin : gen_ready_queue_if_connect_agent
-      `AXI_LITE_ASSIGN_TO_REQ  (ready_queue_req[chip_idx][agent_idx] , local_ready_if[chip_idx][agent_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[chip_idx][agent_idx] , ready_queue_resp[chip_idx][agent_idx]);
+      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req[chip_idx][agent_idx] , local_ready_if[chip_idx][agent_idx]);
+      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[chip_idx][agent_idx] , local_ready_queue_resp[chip_idx][agent_idx]);
     end
   end
 
@@ -362,19 +362,19 @@ module tb_bingo_hw_manager_top;
       .rst_ni                         (rst_ni              ),
       .chip_id_i                      ('0                  ),
       .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
-      .task_queue_axi_lite_req_i      (task_queue_req      ),
-      .task_queue_axi_lite_resp_o     (task_queue_resp     ),
-      .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE ),
+      .task_queue_axi_lite_req_i      (local_task_queue_req[chip_id]      ),
+      .task_queue_axi_lite_resp_o     (local_task_queue_resp[chip_id]     ),
+      .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE                ),
       .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[chip_id]  ),
       .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[chip_id] ),
       .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[chip_id] ),
       .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[chip_id]),
-      .done_queue_base_addr_i         (DONE_QUEUE_BASE     ),
-      .done_queue_axi_lite_req_i      (done_queue_req      ),
-      .done_queue_axi_lite_resp_o     (done_queue_resp     ),
-      .ready_queue_base_addr_i        (ready_base_addr_2d  ),
-      .ready_queue_axi_lite_req_i     (ready_queue_req     ),
-      .ready_queue_axi_lite_resp_o    (ready_queue_resp    )
+      .done_queue_base_addr_i         (DONE_QUEUE_BASE                    ),
+      .done_queue_axi_lite_req_i      (local_done_queue_req[chip_id]      ),
+      .done_queue_axi_lite_resp_o     (local_done_queue_resp[chip_id]     ),
+      .ready_queue_base_addr_i        (ready_base_addr_2d                 ),
+      .ready_queue_axi_lite_req_i     (local_ready_queue_req[chip_id]     ),
+      .ready_queue_axi_lite_resp_o    (local_ready_queue_resp[chip_id]    )
     );    
   end
 
@@ -417,6 +417,13 @@ module tb_bingo_hw_manager_top;
   // ---------------------------------------------------------------------------
   // Stimulus threads
   // ---------------------------------------------------------------------------
+
+  // We will use 4 chiplets to test the top module
+  //        DMA (Chiplet0, Cluster0, Core0)
+  //         
+
+
+
 
   // Host pushes three tasks after reset
   initial begin : host_sequence

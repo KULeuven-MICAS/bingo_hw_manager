@@ -177,8 +177,7 @@ class BingoNode(metaclass=ABCMeta):
             dep_check_code = list_to_one_hot(self._local_dep_check_list)
             dep_set_code = list_to_one_hot(self._local_dep_set_list)
             sv_str = (
-                f"bingo_hw_manager_task_desc_full_t {self._node_name};\n"
-                f"{self._node_name} = {pack_function}(\n"
+                f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                 f"    2'b00, // task_type\n"
                 f"    16'd{self._node_id}, // task_id\n"
                 f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
@@ -196,8 +195,7 @@ class BingoNode(metaclass=ABCMeta):
             if self._dep_check_enable:
                 dep_check_code = list_to_one_hot(self._local_dep_check_list)
                 sv_str = (
-                    f"bingo_hw_manager_task_desc_full_t {self._node_name};\n"
-                    f"{self._node_name} = {pack_function}(\n"
+                    f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                     f"    2'b01, // task_type\n"
                     f"    16'd{self._node_id}, // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
@@ -208,8 +206,7 @@ class BingoNode(metaclass=ABCMeta):
             else:
                 dep_set_code = list_to_one_hot(self._local_dep_set_list)
                 sv_str = (
-                    f"bingo_hw_manager_task_desc_full_t {self._node_name};\n"
-                    f"{self._node_name} = {pack_function}(\n"
+                    f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                     f"    2'b01, // task_type\n"
                     f"    16'd{self._node_id}, // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
@@ -221,8 +218,7 @@ class BingoNode(metaclass=ABCMeta):
         elif self._node_type == "chiplet_dep_set":
             pack_function = "pack_chiplet_dep_set_task"
             sv_str = (
-                f"bingo_hw_manager_chiplet_dep_set_task_desc_full_t {self._node_name};\n"
-                f"{self._node_name} = {pack_function}(\n"
+                f"bingo_hw_manager_chiplet_dep_set_task_desc_full_t {self._node_name} = {pack_function}(\n"
                 f"    2'b10, // task_type\n"
                 f"    16'd{self._node_id}, // task_id\n"
                 f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
@@ -237,8 +233,7 @@ class BingoNode(metaclass=ABCMeta):
         elif self._node_type == "chiplet_dep_check":
             pack_function = "pack_chiplet_dep_check_task"
             sv_str = (
-                f"bingo_hw_manager_chiplet_dep_check_task_desc_full_t {self._node_name};\n"
-                f"{self._node_name} = {pack_function}(\n"
+                f"bingo_hw_manager_chiplet_dep_check_task_desc_full_t {self._node_name} = {pack_function}(\n"
                 f"    2'b11, // task_type\n"
                 f"    16'd{self._node_id}, // task_id\n"
                 f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"

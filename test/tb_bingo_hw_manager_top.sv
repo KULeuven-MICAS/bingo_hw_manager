@@ -20,7 +20,7 @@ module tb_bingo_hw_manager_top;
     localparam int unsigned NUM_CLUSTERS_PER_CHIPLET = 2;
     localparam int unsigned NUM_CORES_PER_CLUSTER    = 3;
     localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
-
+    localparam int unsigned ChipIdWidth = 8;
     localparam int unsigned HOST_AW = 48;
     localparam int unsigned HOST_DW = 64;
     localparam int unsigned DEV_AW  = 48;
@@ -77,10 +77,10 @@ module tb_bingo_hw_manager_top;
     } bingo_hw_manager_task_desc_t;
 
     localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
-    localparam int unsigned ReservedBitsForTaskDesc = HostAxiLiteDataWidth - TaskDescWidth;
-    if (TaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    localparam int unsigned ReservedBitsForTaskDesc = HOST_DW - TaskDescWidth;
+    if (TaskDescWidth>HOST_DW) begin : gen_task_desc_width_check
         initial begin
-        $error("Task Decriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HostAxiLiteDataWidth);
+        $error("Task Decriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HOST_DW);
         $finish;
         end
     end
@@ -110,10 +110,10 @@ module tb_bingo_hw_manager_top;
     } bingo_hw_manager_chiplet_dep_set_task_desc_t;
 
     localparam int unsigned ChipletSetTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_set_task_desc_t);
-    localparam int unsigned ReservedBitsForChipletSetTaskDesc = HostAxiLiteDataWidth - ChipletSetTaskDescWidth;
-    if (ChipletSetTaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    localparam int unsigned ReservedBitsForChipletSetTaskDesc = HOST_DW - ChipletSetTaskDescWidth;
+    if (ChipletSetTaskDescWidth>HOST_DW) begin : gen_chiplet_dep_set_task_desc_width_check
         initial begin
-        $error("Chiplet Set Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletSetTaskDescWidth, HostAxiLiteDataWidth);
+        $error("Chiplet Set Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletSetTaskDescWidth, HOST_DW);
         $finish;
         end
     end
@@ -139,10 +139,10 @@ module tb_bingo_hw_manager_top;
         bingo_hw_manager_task_type_t                 task_type;
     } bingo_hw_manager_chiplet_dep_check_task_desc_t;    
     localparam int unsigned ChipletCheckTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_check_task_desc_t);
-    localparam int unsigned ReservedBitsForChipletCheckTaskDesc = HostAxiLiteDataWidth - ChipletCheckTaskDescWidth;
-    if (ChipletCheckTaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    localparam int unsigned ReservedBitsForChipletCheckTaskDesc = HOST_AW - ChipletCheckTaskDescWidth;
+    if (ChipletCheckTaskDescWidth>HOST_AW) begin :gen_chiplet_dep_check_task_desc_width_check
         initial begin
-        $error("Chiplet Check Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletCheckTaskDescWidth, HostAxiLiteDataWidth);
+        $error("Chiplet Check Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletCheckTaskDescWidth, HOST_AW);
         $finish;
         end
     end
@@ -153,8 +153,142 @@ module tb_bingo_hw_manager_top;
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
-    } bingo_hw_manager_chiplet_dep_check_task_desc_full_t;        
+    } bingo_hw_manager_chiplet_dep_check_task_desc_full_t;
 
+    // Done info struct
+    typedef struct packed{
+        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
+        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_t;
+
+    localparam int unsigned DoneInfoWidth = $bits(bingo_hw_manager_done_info_t);
+    localparam int unsigned ReservedBitsForDoneInfo = DEV_DW - DoneInfoWidth;
+    if (DoneInfoWidth>DEV_DW) begin : gen_done_info_width_check
+        initial begin
+        $error("Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DEV_DW);
+        $finish;
+        end
+    end
+
+    typedef struct packed{
+        logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
+        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
+        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_full_t;
+  // ---------------------------------------------------------------------------
+  // Task descriptor packing helper
+  // ---------------------------------------------------------------------------
+
+  function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input bingo_hw_manager_assigned_cluster_id_t assigned_cluster_id,
+    input bingo_hw_manager_assigned_core_id_t    assigned_core_id,
+    input logic                                  dep_check_en,
+    input bingo_hw_manager_dep_code_t            dep_check_code,
+    input logic                                  dep_set_en,
+    input bingo_hw_manager_dep_code_t            dep_set_code,
+    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
+  );
+
+    bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.assigned_cluster_id              = assigned_cluster_id;
+    tmp.assigned_core_id                 = assigned_core_id;
+    tmp.dep_check_info.dep_check_en      = dep_check_en;
+    tmp.dep_check_info.dep_check_code    = dep_check_code;
+    tmp.dep_set_info.dep_set_en          = dep_set_en;
+    tmp.dep_set_info.dep_set_code        = dep_set_code;
+    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+
+  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input logic                                  dep_check_en,
+    input bingo_hw_manager_dep_code_t            dep_check_code  
+  );
+    bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.assigned_cluster_id              = '1;
+    tmp.assigned_core_id                 = '1;
+    tmp.dep_check_info.dep_check_en      = 1'b1;
+    tmp.dep_check_info.dep_check_code    = dep_check_code;
+    tmp.dep_set_info                     = '0;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input logic                                  dep_set_en,
+    input bingo_hw_manager_dep_code_t            dep_set_code,
+    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
+  );
+    bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_check_info                   = '0;
+    tmp.dep_set_info.dep_set_en          = dep_set_en;
+    tmp.dep_set_info.dep_set_code        = dep_set_code;
+    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+  function automatic bingo_hw_manager_chiplet_dep_set_task_desc_full_t pack_chiplet_dep_set_task(
+    input bingo_hw_manager_task_type_t                    task_type,
+    input bingo_hw_manager_task_id_t                      task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
+    input logic                                           dep_set_all,
+    input logic [2:0]                                     num_dep,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_3,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0
+  );
+    bingo_hw_manager_chiplet_dep_set_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_set_all                      = dep_set_all;
+    tmp.num_dep                          = num_dep;
+    tmp.dep_set_chiplet_id_0             = dep_set_chiplet_id_0;
+    tmp.dep_set_chiplet_id_1             = dep_set_chiplet_id_1;
+    tmp.dep_set_chiplet_id_2             = dep_set_chiplet_id_2;
+    tmp.dep_set_chiplet_id_3             = dep_set_chiplet_id_3;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+  function automatic bingo_hw_manager_chiplet_dep_check_task_desc_full_t pack_chiplet_dep_check_task(
+    input bingo_hw_manager_task_type_t                    task_type,
+    input bingo_hw_manager_task_id_t                      task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_check_sum
+  );
+    bingo_hw_manager_chiplet_dep_check_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_check_sum                    = dep_check_sum;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
   // ---------------------------------------------------------------------------
   // Clock / reset
   // ---------------------------------------------------------------------------
@@ -179,46 +313,204 @@ module tb_bingo_hw_manager_top;
   // AXI-Lite virtual interfaces for local task queue
   AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
                 .AXI_DATA_WIDTH(HOST_DW)
-  ) local_task_if [NUM_CHIPLET-1:0](.clk_i(clk_i));
+  ) local_task_if_chip0(.clk_i(clk_i));
+
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
+                .AXI_DATA_WIDTH(HOST_DW)
+  ) local_task_if_chip1(.clk_i(clk_i));
+
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
+                .AXI_DATA_WIDTH(HOST_DW)
+  ) local_task_if_chip2(.clk_i(clk_i));
+
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW),
+                .AXI_DATA_WIDTH(HOST_DW)
+  ) local_task_if_chip3(.clk_i(clk_i));
 
   // AXI-Lite virtual interfaces for local done queue
   AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
                 .AXI_DATA_WIDTH(DEV_DW )
-  ) local_done_if [NUM_CHIPLET-1:0](.clk_i(clk_i));
+  ) local_done_if_chip0(.clk_i(clk_i));
 
 
   AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
                 .AXI_DATA_WIDTH(DEV_DW )
-  ) local_ready_if [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] (.clk_i(clk_i));
+  ) local_done_if_chip1(.clk_i(clk_i));
 
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_done_if_chip2(.clk_i(clk_i));
+
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_done_if_chip3(.clk_i(clk_i));
+  // AXI-Lite virtual interfaces for local ready queue
+  // Chip0
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster0_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster0_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster0_core2(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster1_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster1_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip0_cluster1_core2(.clk_i(clk_i));
+  // Chip1
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster0_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster0_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster0_core2(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster1_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster1_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip1_cluster1_core2(.clk_i(clk_i));
+  // Chip2
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster0_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster0_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster0_core2(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster1_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster1_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip2_cluster1_core2(.clk_i(clk_i));
+  // Chip3
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster0_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster0_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster0_core2(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster1_core0(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster1_core1(.clk_i(clk_i));
+  AXI_LITE_DV #(.AXI_ADDR_WIDTH(DEV_AW ),
+                .AXI_DATA_WIDTH(DEV_DW )
+  ) local_ready_if_chip3_cluster1_core2(.clk_i(clk_i));
   // Local Task Queue interface
   host_req_t  [NUM_CHIPLET-1:0] local_task_queue_req;
   host_resp_t [NUM_CHIPLET-1:0] local_task_queue_resp;
   // Connect the wires to if
-  for (genvar chip_idx=0; chip_idx<NUM_CHIPLET; chip_idx++) begin : gen_task_queue_if_connect
-    `AXI_LITE_ASSIGN_TO_REQ  (local_task_queue_req[chip_idx] , local_task_if[chip_idx]);
-    `AXI_LITE_ASSIGN_FROM_RESP(local_task_if[chip_idx] , local_task_queue_resp[chip_idx]);
-  end
+  `AXI_LITE_ASSIGN_TO_REQ  (local_task_queue_req[0] , local_task_if_chip0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_task_if_chip0 , local_task_queue_resp[0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_task_queue_req[1] , local_task_if_chip1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_task_if_chip1 , local_task_queue_resp[1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_task_queue_req[2] , local_task_if_chip2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_task_if_chip2 , local_task_queue_resp[2]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_task_queue_req[3] , local_task_if_chip3);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_task_if_chip3 , local_task_queue_resp[3]);  
 
   // Local Done Queue interface
   dev_req_t  [NUM_CHIPLET-1:0] local_done_queue_req;
   dev_resp_t [NUM_CHIPLET-1:0] local_done_queue_resp;
   // Connect the wires to if
-  for (genvar chip_idx=0; chip_idx<NUM_CHIPLET; chip_idx++) begin : gen_done_queue_if_connect
-    `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[chip_idx] , local_done_if[chip_idx]);
-    `AXI_LITE_ASSIGN_FROM_RESP(local_done_if[chip_idx] , local_done_queue_resp[chip_idx]);
-  end
+  `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[0] , local_done_if_chip0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_done_if_chip0 , local_done_queue_resp[0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[1] , local_done_if_chip1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_done_if_chip1 , local_done_queue_resp[1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[2] , local_done_if_chip2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_done_if_chip2 , local_done_queue_resp[2]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[3] , local_done_if_chip3);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_done_if_chip3 , local_done_queue_resp[3]);
+
 
   // Local Ready Queue interface
-  dev_req_t  [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] local_ready_queue_req ;
-  dev_resp_t [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0] local_ready_queue_resp;
+  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip0;
+  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip0;
+  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip1;
+  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip1;
+  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip2;
+  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip2;
+  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip3;
+  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip3;
   // Connect the wires to if
-  for (genvar chip_idx=0; chip_idx<NUM_CHIPLET; chip_idx++) begin : gen_ready_queue_if_connect_chiplet
-    for (genvar agent_idx=0; agent_idx<READY_AGENT_NUM; agent_idx++) begin : gen_ready_queue_if_connect_agent
-      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req[chip_idx][agent_idx] , local_ready_if[chip_idx][agent_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[chip_idx][agent_idx] , local_ready_queue_resp[chip_idx][agent_idx]);
-    end
-  end
+  // Chip0
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[0][0] , local_ready_if_chip0_cluster0_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster0_core0 , local_ready_queue_resp_chip0[0][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[1][0] , local_ready_if_chip0_cluster0_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster0_core1 , local_ready_queue_resp_chip0[1][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[2][0] , local_ready_if_chip0_cluster0_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster0_core2 , local_ready_queue_resp_chip0[2][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[0][1] , local_ready_if_chip0_cluster1_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster1_core0 , local_ready_queue_resp_chip0[0][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[1][1] , local_ready_if_chip0_cluster1_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster1_core1 , local_ready_queue_resp_chip0[1][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[2][1] , local_ready_if_chip0_cluster1_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip0_cluster1_core2 , local_ready_queue_resp_chip0[2][1]);
+  // Chip1
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[0][0] , local_ready_if_chip1_cluster0_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster0_core0 , local_ready_queue_resp_chip1[0][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[1][0] , local_ready_if_chip1_cluster0_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster0_core1 , local_ready_queue_resp_chip1[1][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[2][0] , local_ready_if_chip1_cluster0_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster0_core2 , local_ready_queue_resp_chip1[2][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[0][1] , local_ready_if_chip1_cluster1_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster1_core0 , local_ready_queue_resp_chip1[0][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[1][1] , local_ready_if_chip1_cluster1_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster1_core1 , local_ready_queue_resp_chip1[1][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[2][1] , local_ready_if_chip1_cluster1_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip1_cluster1_core2 , local_ready_queue_resp_chip1[2][1]);
+  // Chip2
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[0][0] , local_ready_if_chip2_cluster0_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster0_core0 , local_ready_queue_resp_chip2[0][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[1][0] , local_ready_if_chip2_cluster0_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster0_core1 , local_ready_queue_resp_chip2[1][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[2][0] , local_ready_if_chip2_cluster0_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster0_core2 , local_ready_queue_resp_chip2[2][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[0][1] , local_ready_if_chip2_cluster1_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster1_core0 , local_ready_queue_resp_chip2[0][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[1][1] , local_ready_if_chip2_cluster1_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster1_core1 , local_ready_queue_resp_chip2[1][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[2][1] , local_ready_if_chip2_cluster1_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip2_cluster1_core2 , local_ready_queue_resp_chip2[2][1]);
+  // Chip3
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[0][0] , local_ready_if_chip3_cluster0_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster0_core0 , local_ready_queue_resp_chip3[0][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[1][0] , local_ready_if_chip3_cluster0_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster0_core1 , local_ready_queue_resp_chip3[1][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[2][0] , local_ready_if_chip3_cluster0_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster0_core2 , local_ready_queue_resp_chip3[2][0]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[0][1] , local_ready_if_chip3_cluster1_core0);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster1_core0 , local_ready_queue_resp_chip3[0][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[1][1] , local_ready_if_chip3_cluster1_core1);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster1_core1 , local_ready_queue_resp_chip3[1][1]);
+  `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[2][1] , local_ready_if_chip3_cluster1_core2);
+  `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if_chip3_cluster1_core2 , local_ready_queue_resp_chip3[2][1]);
+
 
 
 
@@ -291,285 +583,927 @@ module tb_bingo_hw_manager_top;
   axi_lite_driver #(
     .AW(HOST_AW),
     .DW(HOST_DW)
-  ) local_task_drv [NUM_CHIPLET-1:0];
-  for (genvar chip_id = 0; chip_id < NUM_CHIPLET; chip_id++) begin : gen_local_task_drv
-    initial begin 
-      local_task_drv[chip_id] = new(local_task_if[chip_id]);
-      local_task_drv[chip_id].reset_master();
-    end
+  ) local_task_drv_chip0;
+
+  axi_lite_driver #(
+    .AW(HOST_AW),
+    .DW(HOST_DW)
+  ) local_task_drv_chip1;
+
+  axi_lite_driver #(
+    .AW(HOST_AW),
+    .DW(HOST_DW)
+  ) local_task_drv_chip2;
+
+  axi_lite_driver #(
+    .AW(HOST_AW),
+    .DW(HOST_DW)
+  ) local_task_drv_chip3;
+
+  initial begin
+    local_task_drv_chip0 = new(local_task_if_chip0);
+    local_task_drv_chip0.reset_master();
+    local_task_drv_chip1 = new(local_task_if_chip1);
+    local_task_drv_chip1.reset_master();
+    local_task_drv_chip2 = new(local_task_if_chip2);
+    local_task_drv_chip2.reset_master();
+    local_task_drv_chip3 = new(local_task_if_chip3);
+    local_task_drv_chip3.reset_master();
   end
+
 
   axi_lite_driver #(
     .AW(DEV_AW),
     .DW(DEV_DW)
-  ) local_done_drv [NUM_CHIPLET-1:0];
-  for (genvar chip_id = 0; chip_id < NUM_CHIPLET; chip_id++) begin : gen_local_done_drv
-    initial begin 
-      local_done_drv[chip_id] = new(local_done_if[chip_id]);
-      local_done_drv[chip_id].reset_master();
-    end
-  end
+  ) local_done_drv_chip0;
 
   axi_lite_driver #(
     .AW(DEV_AW),
     .DW(DEV_DW)
-  ) local_ready_drv [NUM_CHIPLET-1:0][READY_AGENT_NUM-1:0];
-  for (genvar chip_id = 0; chip_id < NUM_CHIPLET; chip_id++) begin : gen_local_ready_drv_chiplet
-    for (genvar agent_id = 0; agent_id < READY_AGENT_NUM; agent_id++) begin : gen_local_ready_drv_agent
-      initial begin 
-        local_ready_drv[chip_id][agent_id] = new(local_ready_if[chip_id][agent_id]);
-        local_ready_drv[chip_id][agent_id].reset_master();
-      end
-    end
+  ) local_done_drv_chip1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_done_drv_chip2;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_done_drv_chip3;
+
+  initial begin
+    local_done_drv_chip0 = new(local_done_if_chip0);
+    local_done_drv_chip0.reset_master();
+    local_done_drv_chip1 = new(local_done_if_chip1);
+    local_done_drv_chip1.reset_master();
+    local_done_drv_chip2 = new(local_done_if_chip2);
+    local_done_drv_chip2.reset_master();
+    local_done_drv_chip3 = new(local_done_if_chip3);
+    local_done_drv_chip3.reset_master();
   end
 
+  // Ready queue drivers
+  // Chip0
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster0_core0;
 
-  for (genvar chip_id = 0; chip_id < NUM_CHIPLET; chip_id++) begin: gen_dut
-    // We do not need the address translation here since we directly inject the signals via the drivers
-    // The H2H mailbox base address will be handled inside the DUT
-    // Flatten ready-queue base addresses into 2-D packed array for DUT
-    device_axi_lite_addr_t [READY_AGENT_NUM-1:0] ready_base_addr_bus;
-    device_axi_lite_addr_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_base_addr_2d;
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster0_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster0_core2;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster1_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster1_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip0_cluster1_core2;
+  // Chip1
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster0_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster0_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster0_core2;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster1_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster1_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip1_cluster1_core2;
+  // Chip2
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster0_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster0_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster0_core2;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster1_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster1_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip2_cluster1_core2;
+  // Chip3
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster0_core0;
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster0_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster0_core2;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster1_core0;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster1_core1;
+
+  axi_lite_driver #(
+    .AW(DEV_AW),
+    .DW(DEV_DW)
+  ) local_ready_drv_chip3_cluster1_core2;
+  initial begin
+    // Initialize the drivers
+    // Chip0
+    local_ready_drv_chip0_cluster0_core0 = new(local_ready_if_chip0_cluster0_core0);
+    local_ready_drv_chip0_cluster0_core0.reset_master();
+    local_ready_drv_chip0_cluster0_core1 = new(local_ready_if_chip0_cluster0_core1);
+    local_ready_drv_chip0_cluster0_core1.reset_master();
+    local_ready_drv_chip0_cluster0_core2 = new(local_ready_if_chip0_cluster0_core2);
+    local_ready_drv_chip0_cluster0_core2.reset_master();
+    local_ready_drv_chip0_cluster1_core0 = new(local_ready_if_chip0_cluster1_core0);
+    local_ready_drv_chip0_cluster1_core0.reset_master();
+    local_ready_drv_chip0_cluster1_core1 = new(local_ready_if_chip0_cluster1_core1);
+    local_ready_drv_chip0_cluster1_core1.reset_master();
+    local_ready_drv_chip0_cluster1_core2 = new(local_ready_if_chip0_cluster1_core2);
+    local_ready_drv_chip0_cluster1_core2.reset_master();
+    // Chip1
+    local_ready_drv_chip1_cluster0_core0 = new(local_ready_if_chip1_cluster0_core0);
+    local_ready_drv_chip1_cluster0_core0.reset_master();
+    local_ready_drv_chip1_cluster0_core1 = new(local_ready_if_chip1_cluster0_core1);
+    local_ready_drv_chip1_cluster0_core1.reset_master();
+    local_ready_drv_chip1_cluster0_core2 = new(local_ready_if_chip1_cluster0_core2);
+    local_ready_drv_chip1_cluster0_core2.reset_master();
+    local_ready_drv_chip1_cluster1_core0 = new(local_ready_if_chip1_cluster1_core0);
+    local_ready_drv_chip1_cluster1_core0.reset_master();
+    local_ready_drv_chip1_cluster1_core1 = new(local_ready_if_chip1_cluster1_core1);
+    local_ready_drv_chip1_cluster1_core1.reset_master();
+    local_ready_drv_chip1_cluster1_core2 = new(local_ready_if_chip1_cluster1_core2);
+    local_ready_drv_chip1_cluster1_core2.reset_master();
+    // Chip2
+    local_ready_drv_chip2_cluster0_core0 = new(local_ready_if_chip2_cluster0_core0);
+    local_ready_drv_chip2_cluster0_core0.reset_master();
+    local_ready_drv_chip2_cluster0_core1 = new(local_ready_if_chip2_cluster0_core1);
+    local_ready_drv_chip2_cluster0_core1.reset_master();
+    local_ready_drv_chip2_cluster0_core2 = new(local_ready_if_chip2_cluster0_core2);
+    local_ready_drv_chip2_cluster0_core2.reset_master();
+    local_ready_drv_chip2_cluster1_core0 = new(local_ready_if_chip2_cluster1_core0);
+    local_ready_drv_chip2_cluster1_core0.reset_master();
+    local_ready_drv_chip2_cluster1_core1 = new(local_ready_if_chip2_cluster1_core1);
+    local_ready_drv_chip2_cluster1_core1.reset_master();
+    local_ready_drv_chip2_cluster1_core2 = new(local_ready_if_chip2_cluster1_core2);
+    local_ready_drv_chip2_cluster1_core2.reset_master();
+    // Chip3
+    local_ready_drv_chip3_cluster0_core0 = new(local_ready_if_chip3_cluster0_core0);
+    local_ready_drv_chip3_cluster0_core0.reset_master();
+    local_ready_drv_chip3_cluster0_core1 = new(local_ready_if_chip3_cluster0_core1);
+    local_ready_drv_chip3_cluster0_core1.reset_master();
+    local_ready_drv_chip3_cluster0_core2 = new(local_ready_if_chip3_cluster0_core2);
+    local_ready_drv_chip3_cluster0_core2.reset_master();
+    local_ready_drv_chip3_cluster1_core0 = new(local_ready_if_chip3_cluster1_core0);
+    local_ready_drv_chip3_cluster1_core0.reset_master();
+    local_ready_drv_chip3_cluster1_core1 = new(local_ready_if_chip3_cluster1_core1);
+    local_ready_drv_chip3_cluster1_core1.reset_master();
+    local_ready_drv_chip3_cluster1_core2 = new(local_ready_if_chip3_cluster1_core2);
+    local_ready_drv_chip3_cluster1_core2.reset_master(); 
+  end
+
+  device_axi_lite_addr_t [READY_AGENT_NUM-1:0] ready_base_addr_bus;
+  device_axi_lite_addr_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_base_addr_2d;
+  initial begin
     for (int idx = 0; idx < READY_AGENT_NUM; idx++) begin
       ready_base_addr_bus[idx] = READY_QUEUE_BASE + device_axi_lite_addr_t'( idx * READY_QUEUE_STRIDE );
     end
-
     for (int idx = 0; idx < NUM_CORES_PER_CLUSTER; idx++) begin
       for (int jdx = 0; jdx < NUM_CLUSTERS_PER_CHIPLET; jdx++) begin
         ready_base_addr_2d[idx][jdx] = READY_QUEUE_BASE + device_axi_lite_addr_t'( (idx * NUM_CLUSTERS_PER_CHIPLET + jdx) * READY_QUEUE_STRIDE );
       end
     end
-    bingo_hw_manager_top #(
-      .NUM_CHIPLET              (NUM_CHIPLET              ),
-      .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
-      .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
-      .HostAxiLiteAddrWidth     (HOST_AW                  ),
-      .HostAxiLiteDataWidth     (HOST_DW                  ),
-      .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
-      .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-      .task_queue_axi_lite_in_req_t     (host_req_t ),
-      .task_queue_axi_lite_in_resp_t    (host_resp_t),
-      .h2h_axi_lite_out_req_t           (host_req_t ),
-      .h2h_axi_lite_out_resp_t          (host_resp_t),
-      .h2h_axi_lite_in_req_t            (host_req_t ),
-      .h2h_axi_lite_in_resp_t           (host_resp_t),
-      .done_queue_axi_lite_in_req_t     (dev_req_t  ),
-      .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
-      .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
-      .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
-    ) dut (
-      .clk_i                          (clk_i               ),
-      .rst_ni                         (rst_ni              ),
-      .chip_id_i                      ('0                  ),
-      .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
-      .task_queue_axi_lite_req_i      (local_task_queue_req[chip_id]      ),
-      .task_queue_axi_lite_resp_o     (local_task_queue_resp[chip_id]     ),
-      .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE                ),
-      .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[chip_id]  ),
-      .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[chip_id] ),
-      .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[chip_id] ),
-      .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[chip_id]),
-      .done_queue_base_addr_i         (DONE_QUEUE_BASE                    ),
-      .done_queue_axi_lite_req_i      (local_done_queue_req[chip_id]      ),
-      .done_queue_axi_lite_resp_o     (local_done_queue_resp[chip_id]     ),
-      .ready_queue_base_addr_i        (ready_base_addr_2d                 ),
-      .ready_queue_axi_lite_req_i     (local_ready_queue_req[chip_id]     ),
-      .ready_queue_axi_lite_resp_o    (local_ready_queue_resp[chip_id]    )
-    );    
   end
-
-  // ---------------------------------------------------------------------------
-  // Task descriptor packing helper
-  // ---------------------------------------------------------------------------
-
-  function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
-    input bingo_hw_manager_task_type_t           task_type,
-    input bingo_hw_manager_task_id_t             task_id,
-    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
-    input bingo_hw_manager_assigned_cluster_id_t assigned_cluster_id,
-    input bingo_hw_manager_assigned_core_id_t    assigned_core_id,
-    input logic                                  dep_check_en,
-    input bingo_hw_manager_dep_code_t            dep_check_code,
-    input logic                                  dep_set_en,
-    input bingo_hw_manager_dep_code_t            dep_set_code,
-    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
+    // We do not need the address translation here since we directly inject the signals via the drivers
+    // The H2H mailbox base address will be handled inside the DUT
+    // Flatten ready-queue base addresses into 2-D packed array for DUT
+  bingo_hw_manager_top #(
+    .NUM_CHIPLET              (NUM_CHIPLET              ),
+    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
+    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
+    .HostAxiLiteAddrWidth     (HOST_AW                  ),
+    .HostAxiLiteDataWidth     (HOST_DW                  ),
+    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
+    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
+    .task_queue_axi_lite_in_req_t     (host_req_t ),
+    .task_queue_axi_lite_in_resp_t    (host_resp_t),
+    .h2h_axi_lite_out_req_t           (host_req_t ),
+    .h2h_axi_lite_out_resp_t          (host_resp_t),
+    .h2h_axi_lite_in_req_t            (host_req_t ),
+    .h2h_axi_lite_in_resp_t           (host_resp_t),
+    .done_queue_axi_lite_in_req_t     (dev_req_t  ),
+    .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
+    .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
+    .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
+  ) i_dut_chip0 (
+    .clk_i                          (clk_i               ),
+    .rst_ni                         (rst_ni              ),
+    .chip_id_i                      ('0                  ),
+    .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
+    .task_queue_axi_lite_req_i      (local_task_queue_req[0]      ),
+    .task_queue_axi_lite_resp_o     (local_task_queue_resp[0]     ),
+    .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE          ),
+    .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[0]  ),
+    .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[0] ),
+    .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[0] ),
+    .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[0]),
+    .done_queue_base_addr_i         (DONE_QUEUE_BASE              ),
+    .done_queue_axi_lite_req_i      (local_done_queue_req[0]      ),
+    .done_queue_axi_lite_resp_o     (local_done_queue_resp[0]     ),
+    .ready_queue_base_addr_i        (ready_base_addr_2d           ),
+    .ready_queue_axi_lite_req_i     (local_ready_queue_req_chip0  ),
+    .ready_queue_axi_lite_resp_o    (local_ready_queue_resp_chip0 )
+  );    
+  bingo_hw_manager_top #(
+    .NUM_CHIPLET              (NUM_CHIPLET              ),
+    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
+    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
+    .HostAxiLiteAddrWidth     (HOST_AW                  ),
+    .HostAxiLiteDataWidth     (HOST_DW                  ),
+    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
+    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
+    .task_queue_axi_lite_in_req_t     (host_req_t ),
+    .task_queue_axi_lite_in_resp_t    (host_resp_t),
+    .h2h_axi_lite_out_req_t           (host_req_t ),
+    .h2h_axi_lite_out_resp_t          (host_resp_t),
+    .h2h_axi_lite_in_req_t            (host_req_t ),
+    .h2h_axi_lite_in_resp_t           (host_resp_t),
+    .done_queue_axi_lite_in_req_t     (dev_req_t  ),
+    .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
+    .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
+    .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
+  ) i_dut_chip1 (
+    .clk_i                          (clk_i               ),
+    .rst_ni                         (rst_ni              ),
+    .chip_id_i                      ('0                  ),
+    .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
+    .task_queue_axi_lite_req_i      (local_task_queue_req[1]      ),
+    .task_queue_axi_lite_resp_o     (local_task_queue_resp[1]     ),
+    .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE          ),
+    .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[1]  ),
+    .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[1] ),
+    .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[1] ),
+    .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[1]),
+    .done_queue_base_addr_i         (DONE_QUEUE_BASE              ),
+    .done_queue_axi_lite_req_i      (local_done_queue_req[1]      ),
+    .done_queue_axi_lite_resp_o     (local_done_queue_resp[1]     ),
+    .ready_queue_base_addr_i        (ready_base_addr_2d           ),
+    .ready_queue_axi_lite_req_i     (local_ready_queue_req_chip1  ),
+    .ready_queue_axi_lite_resp_o    (local_ready_queue_resp_chip1 )
+  );    
+  bingo_hw_manager_top #(
+    .NUM_CHIPLET              (NUM_CHIPLET              ),
+    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
+    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
+    .HostAxiLiteAddrWidth     (HOST_AW                  ),
+    .HostAxiLiteDataWidth     (HOST_DW                  ),
+    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
+    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
+    .task_queue_axi_lite_in_req_t     (host_req_t ),
+    .task_queue_axi_lite_in_resp_t    (host_resp_t),
+    .h2h_axi_lite_out_req_t           (host_req_t ),
+    .h2h_axi_lite_out_resp_t          (host_resp_t),
+    .h2h_axi_lite_in_req_t            (host_req_t ),
+    .h2h_axi_lite_in_resp_t           (host_resp_t),
+    .done_queue_axi_lite_in_req_t     (dev_req_t  ),
+    .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
+    .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
+    .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
+  ) i_dut_chip2 (
+    .clk_i                          (clk_i               ),
+    .rst_ni                         (rst_ni              ),
+    .chip_id_i                      ('0                  ),
+    .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
+    .task_queue_axi_lite_req_i      (local_task_queue_req[2]      ),
+    .task_queue_axi_lite_resp_o     (local_task_queue_resp[2]     ),
+    .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE          ),
+    .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[2]  ),
+    .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[2] ),
+    .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[2] ),
+    .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[2]),
+    .done_queue_base_addr_i         (DONE_QUEUE_BASE              ),
+    .done_queue_axi_lite_req_i      (local_done_queue_req[2]      ),
+    .done_queue_axi_lite_resp_o     (local_done_queue_resp[2]     ),
+    .ready_queue_base_addr_i        (ready_base_addr_2d           ),
+    .ready_queue_axi_lite_req_i     (local_ready_queue_req_chip2  ),
+    .ready_queue_axi_lite_resp_o    (local_ready_queue_resp_chip2 )
   );
-    assert(task_type==2'b00);
-    bingo_hw_manager_task_desc_full_t tmp;
-    tmp.task_type                        = task_type;
-    tmp.task_id                          = task_id;
-    tmp.assigned_chiplet_id              = assigned_chiplet_id;
-    tmp.assigned_cluster_id              = assigned_cluster_id;
-    tmp.assigned_core_id                 = assigned_core_id;
-    tmp.dep_check_info.dep_check_en      = dep_check_en;
-    tmp.dep_check_info.dep_check_code    = dep_check_code;
-    tmp.dep_set_info.dep_set_en          = dep_set_en;
-    tmp.dep_set_info.dep_set_code        = dep_set_code;
-    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
-    tmp.reserved_bits                    = '0;
-    return tmp;
-  endfunction
-
-
-  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
-    input bingo_hw_manager_task_type_t           task_type,
-    input bingo_hw_manager_task_id_t             task_id,
-    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
-    input logic                                  dep_check_en,
-    input bingo_hw_manager_dep_code_t            dep_check_code  
+  bingo_hw_manager_top #(
+    .NUM_CHIPLET              (NUM_CHIPLET              ),
+    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
+    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
+    .HostAxiLiteAddrWidth     (HOST_AW                  ),
+    .HostAxiLiteDataWidth     (HOST_DW                  ),
+    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
+    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
+    .task_queue_axi_lite_in_req_t     (host_req_t ),
+    .task_queue_axi_lite_in_resp_t    (host_resp_t),
+    .h2h_axi_lite_out_req_t           (host_req_t ),
+    .h2h_axi_lite_out_resp_t          (host_resp_t),
+    .h2h_axi_lite_in_req_t            (host_req_t ),
+    .h2h_axi_lite_in_resp_t           (host_resp_t),
+    .done_queue_axi_lite_in_req_t     (dev_req_t  ),
+    .done_queue_axi_lite_in_resp_t    (dev_resp_t ),
+    .ready_queue_axi_lite_in_req_t    (dev_req_t  ),
+    .ready_queue_axi_lite_in_resp_t   (dev_resp_t )
+  ) i_dut_chip3 (
+    .clk_i                          (clk_i               ),
+    .rst_ni                         (rst_ni              ),
+    .chip_id_i                      ('0                  ),
+    .task_queue_base_addr_i         (TASK_QUEUE_BASE     ),
+    .task_queue_axi_lite_req_i      (local_task_queue_req[3]      ),
+    .task_queue_axi_lite_resp_o     (local_task_queue_resp[3]     ),
+    .h2h_mailbox_base_addr_i        (H2H_DONE_QUEUE_BASE          ),
+    .h2h_to_remote_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[3]  ),
+    .h2h_to_remote_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[3] ),
+    .h2h_from_remote_axi_lite_req_i (h2h_axi_lite_xbar_out_req[3] ),
+    .h2h_from_remote_axi_lite_resp_o(h2h_axi_lite_xbar_out_resp[3]),
+    .done_queue_base_addr_i         (DONE_QUEUE_BASE              ),
+    .done_queue_axi_lite_req_i      (local_done_queue_req[3]      ),
+    .done_queue_axi_lite_resp_o     (local_done_queue_resp[3]     ),
+    .ready_queue_base_addr_i        (ready_base_addr_2d           ),
+    .ready_queue_axi_lite_req_i     (local_ready_queue_req_chip3  ),
+    .ready_queue_axi_lite_resp_o    (local_ready_queue_resp_chip3 )
   );
-    assert(task_type==2'b01 && dep_check_en==1'b1);
-    bingo_hw_manager_task_desc_full_t tmp;
-    tmp.task_type                        = task_type;
-    tmp.task_id                          = task_id;
-    tmp.assigned_chiplet_id              = assigned_chiplet_id;
-    tmp.assigned_cluster_id              = '1;
-    tmp.assigned_core_id                 = '1;
-    tmp.dep_check_info.dep_check_en      = 1'b1;
-    tmp.dep_check_info.dep_check_code    = dep_check_code;
-    tmp.dep_set_info                     = '0;
-    tmp.reserved_bits                    = '0;
-  endfunction
-
-  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
-    input bingo_hw_manager_task_type_t           task_type,
-    input bingo_hw_manager_task_id_t             task_id,
-    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
-    input logic                                  dep_set_en,
-    input bingo_hw_manager_dep_code_t            dep_set_code,
-    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
-  );
-    assert(task_type==2'b01 && dep_set_en==1'b1);
-    bingo_hw_manager_task_desc_full_t tmp;
-    tmp.task_type                        = task_type;
-    tmp.task_id                          = task_id;
-    tmp.assigned_chiplet_id              = assigned_chiplet_id;
-    tmp.dep_check_info                   = '0;
-    tmp.dep_set_info.dep_set_en          = dep_set_en;
-    tmp.dep_set_info.dep_set_code        = dep_set_code;
-    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
-    tmp.reserved_bits                    = '0;
-    return tmp;
-  endfunction
-
-  function automatic bingo_hw_manager_chiplet_dep_set_task_desc_full_t pack_chiplet_dep_set_task(
-    input bingo_hw_manager_task_type_t                    task_type,
-    input bingo_hw_manager_task_id_t                      task_id,
-    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
-    input logic                                           dep_set_all,
-    input logic [2:0]                                     num_dep,
-    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_3,
-    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2,
-    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1,
-    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0
-  );
-    assert(task_type==2'b10);
-    bingo_hw_manager_chiplet_dep_set_task_desc_full_t tmp;
-    tmp.task_type                        = task_type;
-    tmp.task_id                          = task_id;
-    tmp.assigned_chiplet_id              = assigned_chiplet_id;
-    tmp.dep_set_all                      = dep_set_all;
-    tmp.num_dep                          = num_dep;
-    tmp.dep_set_chiplet_id_0             = dep_set_chiplet_id_0;
-    tmp.dep_set_chiplet_id_1             = dep_set_chiplet_id_1;
-    tmp.dep_set_chiplet_id_2             = dep_set_chiplet_id_2;
-    tmp.dep_set_chiplet_id_3             = dep_set_chiplet_id_3;
-    tmp.reserved_bits                    = '0;
-    return tmp;
-  endfunction
-
-  function automatic bingo_hw_manager_chiplet_dep_check_task_desc_full_t pack_chiplet_dep_check_task(
-    input bingo_hw_manager_task_type_t                    task_type,
-    input bingo_hw_manager_task_id_t                      task_id,
-    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
-    input bingo_hw_manager_assigned_chiplet_id_t          dep_check_sum
-  );
-    assert(task_type==2'b11);
-    bingo_hw_manager_chiplet_dep_check_task_desc_full_t tmp;
-    tmp.task_type                        = task_type;
-    tmp.task_id                          = task_id;
-    tmp.assigned_chiplet_id              = assigned_chiplet_id;
-    tmp.dep_check_sum                    = dep_check_sum;
-    tmp.reserved_bits                    = '0;
-    return tmp;
-  endfunction
-
   // ---------------------------------------------------------------------------
   // Stimulus threads
   // ---------------------------------------------------------------------------
 
-  // Host pushes three tasks after reset
-  initial begin : host_sequence
-    automatic bingo_hw_manager_task_desc_full_t task0;
-    automatic bingo_hw_manager_task_desc_full_t task1;
-    automatic bingo_hw_manager_task_desc_full_t task2;
-    automatic axi_pkg::resp_t resp; // Declare all variables at the top
 
-    host_drv.reset_master();
+  bingo_hw_manager_task_desc_full_t chip0_cluster0_core0_gemm = pack_normal_task(
+      2'b00, // task_type
+      16'd1, // task_id
+      0, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b0, // dep_check_en
+      '0, // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      1 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip0_cluster1_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd2, // task_id
+      0, // assigned_chiplet_id
+      1, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000100), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip0_cluster0_core2_simd = pack_normal_task(
+      2'b00, // task_type
+      16'd3, // task_id
+      0, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      2, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_check_code
+      1'b0, // dep_set_en
+      '0, // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip1_cluster0_core2_simd = pack_normal_task(
+      2'b00, // task_type
+      16'd4, // task_id
+      1, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      2, // assigned_core_id
+      1'b0, // dep_check_en
+      '0, // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      1 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip1_cluster0_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd5, // task_id
+      1, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000100), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip1_cluster1_core0_gemm = pack_normal_task(
+      2'b00, // task_type
+      16'd6, // task_id
+      1, // assigned_chiplet_id
+      1, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000100), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip1_cluster0_core0_gemm = pack_normal_task(
+      2'b00, // task_type
+      16'd7, // task_id
+      1, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000011), // dep_check_code
+      1'b0, // dep_set_en
+      '0, // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip2_cluster0_core0_gemm = pack_normal_task(
+      2'b00, // task_type
+      16'd8, // task_id
+      2, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b0, // dep_check_en
+      '0, // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      1 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip2_cluster0_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd9, // task_id
+      2, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip2_cluster1_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd10, // task_id
+      2, // assigned_chiplet_id
+      1, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip2_cluster0_core0_gemm_2 = pack_normal_task(
+      2'b00, // task_type
+      16'd11, // task_id
+      2, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_check_code
+      1'b0, // dep_set_en
+      '0, // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_1 = pack_normal_task(
+      2'b00, // task_type
+      16'd12, // task_id
+      3, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b0, // dep_check_en
+      '0, // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip3_cluster0_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd13, // task_id
+      3, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip3_cluster1_core1_dma = pack_normal_task(
+      2'b00, // task_type
+      16'd14, // task_id
+      3, // assigned_chiplet_id
+      1, // assigned_cluster_id
+      1, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_2 = pack_normal_task(
+      2'b00, // task_type
+      16'd15, // task_id
+      3, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000001), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_3 = pack_normal_task(
+      2'b00, // task_type
+      16'd16, // task_id
+      3, // assigned_chiplet_id
+      0, // assigned_cluster_id
+      0, // assigned_core_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000011), // dep_check_code
+      1'b0, // dep_set_en
+      '0, // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_chiplet_dep_check_task_desc_full_t dep_check_chip1_cluster0_core2_simd = pack_chiplet_dep_check_task(
+      2'b11, // task_type
+      16'd17, // task_id
+      1, // assigned_chiplet_id
+      1 // dep_check_sum
+  );
+
+  bingo_hw_manager_chiplet_dep_check_task_desc_full_t dep_check_chip2_cluster0_core0_gemm = pack_chiplet_dep_check_task(
+      2'b11, // task_type
+      16'd18, // task_id
+      2, // assigned_chiplet_id
+      1 // dep_check_sum
+  );
+
+  bingo_hw_manager_chiplet_dep_check_task_desc_full_t dep_check_chip3_cluster0_core0_gemm_1 = pack_chiplet_dep_check_task(
+      2'b11, // task_type
+      16'd19, // task_id
+      3, // assigned_chiplet_id
+      2 // dep_check_sum
+  );
+
+  bingo_hw_manager_chiplet_dep_set_task_desc_full_t dep_set_chip0_cluster0_core2_simd_0 = pack_chiplet_dep_set_task(
+      2'b10, // task_type
+      16'd20, // task_id
+      0, // assigned_chiplet_id
+      1'b0, // dep_set_all
+      3'd0, // num_dep
+      0, // dep_set_chiplet_id_3
+      0, // dep_set_chiplet_id_2
+      2, // dep_set_chiplet_id_1
+      1 // dep_set_chiplet_id_0
+  );
+
+  bingo_hw_manager_chiplet_dep_set_task_desc_full_t dep_set_chip1_cluster0_core0_gemm_0 = pack_chiplet_dep_set_task(
+      2'b10, // task_type
+      16'd21, // task_id
+      1, // assigned_chiplet_id
+      1'b0, // dep_set_all
+      3'd0, // num_dep
+      0, // dep_set_chiplet_id_3
+      0, // dep_set_chiplet_id_2
+      0, // dep_set_chiplet_id_1
+      3 // dep_set_chiplet_id_0
+  );
+
+  bingo_hw_manager_chiplet_dep_set_task_desc_full_t dep_set_chip2_cluster0_core0_gemm_2_0 = pack_chiplet_dep_set_task(
+      2'b10, // task_type
+      16'd22, // task_id
+      2, // assigned_chiplet_id
+      1'b0, // dep_set_all
+      3'd0, // num_dep
+      0, // dep_set_chiplet_id_3
+      0, // dep_set_chiplet_id_2
+      0, // dep_set_chiplet_id_1
+      3 // dep_set_chiplet_id_0
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_set_chip1_cluster0_core2_simd_0 = pack_dummy_set_task(
+      2'b01, // task_type
+      16'd23, // task_id
+      1, // assigned_chiplet_id
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_set_chip2_cluster0_core0_gemm_0 = pack_dummy_set_task(
+      2'b01, // task_type
+      16'd24, // task_id
+      2, // assigned_chiplet_id
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_set_chip3_cluster0_core0_gemm_1_0 = pack_dummy_set_task(
+      2'b01, // task_type
+      16'd25, // task_id
+      3, // assigned_chiplet_id
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      0 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_set_chip3_cluster0_core0_gemm_1_1 = pack_dummy_set_task(
+      2'b01, // task_type
+      16'd26, // task_id
+      3, // assigned_chiplet_id
+      1'b1, // dep_set_en
+      bingo_hw_manager_dep_code_t'(8'b00000010), // dep_set_code
+      1 // dep_set_cluster_id
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_check_chip2_cluster0_core0_gemm_2_1 = pack_dummy_check_task(
+      2'b01, // task_type
+      16'd27, // task_id
+      2, // assigned_chiplet_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000010) // dep_check_code
+  );
+
+  bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pack_dummy_check_task(
+      2'b01, // task_type
+      16'd28, // task_id
+      3, // assigned_chiplet_id
+      1'b1, // dep_check_en
+      bingo_hw_manager_dep_code_t'(8'b00000010) // dep_check_code
+  );
+  // Host pushes tasks for chiplet 0
+  initial begin : chip0_push_sequence
+    automatic axi_pkg::resp_t resp_chip0;
     wait (rst_ni);
     @(posedge clk_i);
 
-    // Define tasks
-    task0 = pack_task( 16'd1,      // task id
-                       2'd0,      // core sel
-                       1'b0,    // is dummy
-                       1'b0,    // dep check en
-                       3'b000,      // dep check code
-                       1'd0,      // dep check cluster idx
-                       1'b0,    // dep check chiplet_en
-                       4'd0,    // dep check chiplet_code
-                       1'b1,    // dep set en
-                       3'b010, // dep set code (set core 1)
-                       1'd0       // dep set cluster idx
-                     );
-    task1 = pack_task( 16'd2,      // task id
-                       2'd1,      // core sel
-                       1'b0,    // is dummy
-                       1'b1,    // dep check en
-                       3'b001, // dep check code (wait for core 0)
-                       1'd0,      // dep check cluster idx (cluster 0)
-                       1'b0,    // dep check chiplet_en
-                       4'd0,    // dep check chiplet_code
-                       1'b1,    // dep set en
-                       3'b100,   // dep set code (set core 2)
-                       1'd1       // dep set cluster idx (cluster 1)
-                     );
-    task2 = pack_task( 16'd3,   // task id
-                       2'd2,    // core sel
-                       1'b0,    // is dummy
-                       1'b1,    // dep check en
-                       3'b010,  // dep check code (wait for core 1)
-                       '0,      // dep check cluster idx (cluster 0)
-                       1'b0,    // dep check chiplet_en
-                       4'd0,    // dep check chiplet_code
-                       1'b0,    // dep set en
-                       '0,      // dep set code
-                       '0       // dep set cluster idx
-                     );
-
-    // Send tasks
     fork
-      host_drv.send_aw(TASK_QUEUE_BASE, '0);
-      host_drv.send_w(task0, {HOST_DW/8{1'b1}});
-      host_drv.recv_b(resp);
-    join_none
-
-    #50;
-    fork
-    host_drv.send_aw(TASK_QUEUE_BASE, '0);
-    host_drv.send_w(task1, {HOST_DW/8{1'b1}});
-    host_drv.recv_b(resp);
+      local_task_drv_chip0.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip0.send_w(chip0_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
+      local_task_drv_chip0.recv_b(resp_chip0);
     join_none
     #50;
-
     fork
-    host_drv.send_aw(TASK_QUEUE_BASE, '0);
-    host_drv.send_w(task2, {HOST_DW/8{1'b1}});
-    host_drv.recv_b(resp);
+      local_task_drv_chip0.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip0.send_w(chip0_cluster1_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip0.recv_b(resp_chip0);
     join_none
+    #50;
+    fork
+      local_task_drv_chip0.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip0.send_w(chip0_cluster0_core2_simd, {HOST_DW/8{1'b1}});
+      local_task_drv_chip0.recv_b(resp_chip0);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip0.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip0.send_w(dep_set_chip0_cluster0_core2_simd_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip0.recv_b(resp_chip0);
+    join_none
+    #50;
   end
 
-  task automatic ready_queue_worker(input int idx,
+  // Host pushes tasks for chiplet 1
+  initial begin : chip1_push_sequence
+    automatic axi_pkg::resp_t resp_chip1;
+    wait (rst_ni);
+    @(posedge clk_i);
+
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(dep_check_chip1_cluster0_core2_simd, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(chip1_cluster0_core2_simd, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(chip1_cluster1_core0_gemm, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(dummy_set_chip1_cluster0_core2_simd_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(chip1_cluster0_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(chip1_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip1.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip1.send_w(dep_set_chip1_cluster0_core0_gemm_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip1.recv_b(resp_chip1);
+    join_none
+    #50;
+  end
+
+  // Host pushes tasks for chiplet 2
+  initial begin : chip2_push_sequence
+    automatic axi_pkg::resp_t resp_chip2;
+    wait (rst_ni);
+    @(posedge clk_i);
+
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(dep_check_chip2_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(chip2_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(chip2_cluster1_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(dummy_set_chip2_cluster0_core0_gemm_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(chip2_cluster0_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(dummy_check_chip2_cluster0_core0_gemm_2_1, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(chip2_cluster0_core0_gemm_2, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip2.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip2.send_w(dep_set_chip2_cluster0_core0_gemm_2_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip2.recv_b(resp_chip2);
+    join_none
+    #50;
+  end
+
+  // Host pushes tasks for chiplet 3
+  initial begin : chip3_push_sequence
+    automatic axi_pkg::resp_t resp_chip3;
+    wait (rst_ni);
+    @(posedge clk_i);
+
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(dep_check_chip3_cluster0_core0_gemm_1, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_1, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_2, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(dummy_set_chip3_cluster0_core0_gemm_1_0, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(dummy_set_chip3_cluster0_core0_gemm_1_1, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(chip3_cluster0_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(chip3_cluster1_core1_dma, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(dummy_check_chip3_cluster0_core0_gemm_3_1, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+    fork
+      local_task_drv_chip3.send_aw(TASK_QUEUE_BASE, '0);
+      local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_3, {HOST_DW/8{1'b1}});
+      local_task_drv_chip3.recv_b(resp_chip3);
+    join_none
+    #50;
+  end
+
+  task automatic chip0_cluster0_core0_ready_queue_worker(input int idx,
                                     input int core,
                                     input int cluster);
     axi_pkg::resp_t                resp;
@@ -579,47 +1513,1342 @@ module tb_bingo_hw_manager_top;
     device_axi_lite_addr_t         status_addr;
     bingo_hw_manager_done_info_full_t done_info;
     device_axi_lite_data_t         done_payload;
-
     data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
     status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
 
-    $display("%0t READY[%0d,%0d] worker started, idx %0d", $time, core, cluster, idx);
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
 
     forever begin
-      $display("%0t READY[%0d,%0d] polling for new task...", $time, core, cluster);
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
       fork 
-      ready_drv[idx].send_ar(status_addr, '0);
-      ready_drv[idx].recv_r(status, resp);
+      local_ready_drv_chip0_cluster0_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster0_core0.recv_r(status, resp);
       join_none
-      $display("%0t READY[%0d,%0d] status: 0x%0h", $time, core, cluster, status);
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
       repeat (5) @(posedge clk_i);
       if (status[0]) begin
-        $display("%0t READY[%0d,%0d] no task available, retrying...", $time, core, cluster);
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
         repeat (10) @(posedge clk_i);
         continue;
       end
-      $display("%0t READY[%0d,%0d] task available, reading...", $time, core, cluster);
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
       fork
-      ready_drv[idx].send_ar(data_addr, '0);
-      ready_drv[idx].recv_r(data, resp);
+      local_ready_drv_chip0_cluster0_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster0_core0.recv_r(data, resp);
       join_none
       repeat (5) @(posedge clk_i);
-      $display("%0t READY[%0d,%0d] recvs task_id %0d",
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
               $time, core, cluster, data[TaskIdWidth-1:0]);
-      $display("%0t READY[%0d,%0d] doing some work....",
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
               $time, core, cluster);                
       repeat ($urandom_range(20, 50)) @(posedge clk_i);
-      $display("%0t READY[%0d,%0d] done with task_id %0d, sending done info back",
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
               $time, core, cluster, data[TaskIdWidth-1:0]);
       done_info.task_id     = data[TaskIdWidth-1:0];
-      done_info.cluster_id  = bingo_hw_manager_cluster_id_t'(cluster);
-      done_info.core_id     = bingo_hw_manager_task_type_t'(core);
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      done_drv.send_aw(DONE_QUEUE_BASE, '0);
-      done_drv.send_w(done_payload, {DEV_DW/8{1'b1}});
-      done_drv.recv_b(resp);
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip0_cluster0_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip0_cluster0_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster0_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip0_cluster0_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster0_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip0_cluster0_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip0_cluster0_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster0_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip0_cluster0_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster0_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip0_cluster1_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip0_cluster1_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster1_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip0_cluster1_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster1_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip0_cluster1_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip0_cluster1_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster1_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip0_cluster1_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster1_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip0_cluster1_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t Chip0 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip0_cluster1_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip0_cluster1_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t Chip0 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t Chip0 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip0_cluster1_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip0_cluster1_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t Chip0 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip0.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip0.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip1_cluster0_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster0_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster0_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster0_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster0_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip1_cluster0_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster0_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster0_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster0_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster0_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip1_cluster0_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster0_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster0_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster0_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster0_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip1_cluster1_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster1_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster1_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster1_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster1_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip1_cluster1_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster1_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster1_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster1_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster1_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip1_cluster1_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip1 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip1_cluster1_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip1_cluster1_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip1 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip1 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip1_cluster1_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip1_cluster1_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip1 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip1.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip1.recv_b(resp);
+      join_none
+    end
+  endtask
+  task automatic chip2_cluster0_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster0_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster0_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster0_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster0_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip2_cluster0_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster0_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster0_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster0_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster0_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip2_cluster0_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster0_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster0_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster0_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster0_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip2_cluster1_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster1_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster1_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster1_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster1_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip2_cluster1_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster1_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster1_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster1_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster1_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip2_cluster1_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip2 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip2_cluster1_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip2_cluster1_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip2 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip2 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip2_cluster1_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip2_cluster1_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip2 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip2.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip2.recv_b(resp);
+      join_none
+    end
+  endtask
+  task automatic chip3_cluster0_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster0_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster0_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster0_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster0_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip3_cluster0_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster0_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster0_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster0_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster0_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip3_cluster0_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster0_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster0_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster0_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster0_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip3_cluster1_core0_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster1_core0.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster1_core0.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster1_core0.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster1_core0.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
+      join_none
+    end
+  endtask
+
+
+  task automatic chip3_cluster1_core1_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster1_core1.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster1_core1.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster1_core1.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster1_core1.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
+      join_none
+    end
+  endtask
+
+  task automatic chip3_cluster1_core2_ready_queue_worker(input int idx,
+                                    input int core,
+                                    input int cluster);
+    axi_pkg::resp_t                resp;
+    device_axi_lite_data_t         data;
+    device_axi_lite_addr_t         data_addr;
+    device_axi_lite_data_t         status;
+    device_axi_lite_addr_t         status_addr;
+    bingo_hw_manager_done_info_full_t done_info;
+    device_axi_lite_data_t         done_payload;
+    data_addr   = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd4;
+    status_addr = READY_QUEUE_BASE + device_axi_lite_addr_t'(idx * READY_QUEUE_STRIDE) + 32'd8;
+
+    $display("%0t chip3 READY[Core%0d,Cluster%0d] worker started, idx %0d", $time, core, cluster, idx);
+
+    forever begin
+      // $display("%0t READY[Core%0d,Cluster%0d] polling for new task...", $time, core, cluster);
+      fork 
+      local_ready_drv_chip3_cluster1_core2.send_ar(status_addr, '0);
+      local_ready_drv_chip3_cluster1_core2.recv_r(status, resp);
+      join_none
+      // $display("%0t READY[Core%0d,Cluster%0d] status: 0x%0h", $time, core, cluster, status);
+      repeat (5) @(posedge clk_i);
+      if (status[0]) begin
+        // $display("%0t chip3 READY[Core%0d,Cluster%0d] no task available, retrying...", $time, core, cluster);
+        repeat (10) @(posedge clk_i);
+        continue;
+      end
+      // Here the core sees a task is ready
+      // $display("%0t chip3 READY[Core%0d,Cluster%0d] task available, reading...", $time, core, cluster);
+      // Read the task id
+      fork
+      local_ready_drv_chip3_cluster1_core2.send_ar(data_addr, '0);
+      local_ready_drv_chip3_cluster1_core2.recv_r(data, resp);
+      join_none
+      repeat (5) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] recvs task_id %0d",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] doing some work....",
+              $time, core, cluster);                
+      repeat ($urandom_range(20, 50)) @(posedge clk_i);
+      $display("%0t chip3 READY[Core%0d,Cluster%0d] done with task_id %0d, sending done info back",
+              $time, core, cluster, data[TaskIdWidth-1:0]);
+      done_info.task_id     = data[TaskIdWidth-1:0];
+      done_info.assigned_cluster_id  = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+      done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core);
+      done_info.reserved_bits = '0;
+      done_payload = device_axi_lite_data_t'(done_info);
+      fork
+      local_done_drv_chip3.send_aw(DONE_QUEUE_BASE, '0);
+      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      local_done_drv_chip3.recv_b(resp);
       join_none
     end
   endtask
@@ -632,7 +2861,34 @@ module tb_bingo_hw_manager_top;
         automatic int cluster_i = cluster_idx;
         automatic int idx       = core_i * NUM_CLUSTERS_PER_CHIPLET + cluster_i;
         fork
-          ready_queue_worker(idx, core_i, cluster_i);
+          // Chip0
+          chip0_cluster0_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip0_cluster0_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip0_cluster0_core2_ready_queue_worker(idx, core_i, cluster_i);
+          chip0_cluster1_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip0_cluster1_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip0_cluster1_core2_ready_queue_worker(idx, core_i, cluster_i);
+          // Chip1
+          chip1_cluster0_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip1_cluster0_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip1_cluster0_core2_ready_queue_worker(idx, core_i, cluster_i);
+          chip1_cluster1_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip1_cluster1_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip1_cluster1_core2_ready_queue_worker(idx, core_i, cluster_i);
+          // Chip2
+          chip2_cluster0_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip2_cluster0_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip2_cluster0_core2_ready_queue_worker(idx, core_i, cluster_i);
+          chip2_cluster1_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip2_cluster1_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip2_cluster1_core2_ready_queue_worker(idx, core_i, cluster_i);
+          // Chip3
+          chip3_cluster0_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip3_cluster0_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip3_cluster0_core2_ready_queue_worker(idx, core_i, cluster_i);
+          chip3_cluster1_core0_ready_queue_worker(idx, core_i, cluster_i);
+          chip3_cluster1_core1_ready_queue_worker(idx, core_i, cluster_i);
+          chip3_cluster1_core2_ready_queue_worker(idx, core_i, cluster_i);
         join_none
       end
     end
@@ -640,7 +2896,7 @@ module tb_bingo_hw_manager_top;
 
   // Timeout
   initial begin
-    #2000;
+    #5000;
     $fatal(1, "Timeout");
   end
 

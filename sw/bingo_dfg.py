@@ -314,7 +314,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # Define shapes for different task types
         task_type_shapes = {
             "normal": "o",  # Circle
-            "dummy": "s",   # Square
+            "dummy_set": "s",   # Square
+            "dummy_check": "v",  # Downward Triangle
             "chiplet_dep_set": "D",  # Diamond
             "chiplet_dep_check": "^"  # Triangle
         }
@@ -338,6 +339,11 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
 
         for node in self.nodes:
             task_type = node.node_type  # Get the task type as a string
+            if task_type == "dummy":
+                if node.dep_set_enable:
+                    task_type = "dummy_set"
+                elif node.dep_check_enable:
+                    task_type = "dummy_check"
             assigned_chiplet = node.assigned_chiplet_id
 
             # Get the shape for the task type
@@ -364,8 +370,18 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         nx.draw_networkx_edges(self, pos)
 
         # Draw labels
-        labels = {node: f"Cluster{node.assigned_cluster_id}Core{node.assigned_core_id}\n{node.node_type}\nChiplet: {node.assigned_chiplet_id}"
-                  for node in self.nodes}
+        labels = {}
+        for node in self.nodes:
+            cur_chiplet_id = node.assigned_chiplet_id
+            cur_cluster_id = node.assigned_cluster_id
+            cur_core_id = node.assigned_core_id
+            cur_task_type = node.node_type
+            if cur_task_type == "dummy":
+                if node.dep_set_enable:
+                    cur_task_type = "dummy_set"
+                elif node.dep_check_enable:
+                    cur_task_type = "dummy_check"
+            labels[node] = f"Cluster{cur_cluster_id}Core{cur_core_id}\n{cur_task_type}\nChiplet: {cur_chiplet_id}"
         nx.draw_networkx_labels(self, pos, labels=labels, font_size=8)
 
         # Create a legend for task types
@@ -379,7 +395,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         plt.savefig(filename)
         plt.show()
         
-    def bingo_emit_sv(self) -> str:
+    def bingo_emit_task_desc_sv(self) -> str:
         """Emit the SystemVerilog string for all nodes in the DFG."""
         sv_strings = []
 
@@ -391,3 +407,54 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # Combine all the SystemVerilog strings with newlines
         return "\n\n".join(sv_strings)
 
+    def bingo_emit_push_task_sv(self) -> str:
+        """Emit the SystemVerilog string to push tasks for all nodes in the DFG."""
+        sv_strings = []
+
+        # Iterate over each chiplet
+        for chiplet_id in range(MAX_NUM_CHIPLETS):
+            # Check if there are any nodes for this chiplet_id
+            chiplet_nodes = [node for node in self.node_list if node.assigned_chiplet_id == chiplet_id]
+            if not chiplet_nodes:
+                continue  # Skip this chiplet if no nodes exist
+
+            chiplet_sv = []
+            chiplet_sv.append(f"  // Host pushes tasks for chiplet {chiplet_id}")
+            chiplet_sv.append(f"  initial begin : chip{chiplet_id}_push_sequence")
+            chiplet_sv.append(f"    automatic axi_pkg::resp_t resp_chip{chiplet_id};")
+            chiplet_sv.append(f"    wait (rst_ni);")
+            chiplet_sv.append(f"    @(posedge clk_i);")
+            chiplet_sv.append("")
+
+            # Perform a topological sort of the graph to ensure dependency order
+            topo_sorted_nodes = list(nx.topological_sort(self))
+
+            # Filter nodes for the current chiplet and sort them by priority
+            def node_priority(node):
+                # Assign priorities based on node type
+                if node.node_type == "chiplet_dep_set":
+                    return 3  # Lowest priority (pushed last)
+                elif node.node_type == "dummy_check":
+                    return 1  # High priority (pushed early)
+                else:
+                    return 2  # Default priority for normal tasks
+
+            chiplet_nodes_sorted = sorted(
+                [node for node in topo_sorted_nodes if node.assigned_chiplet_id == chiplet_id],
+                key=node_priority
+            )
+
+            # Generate the SystemVerilog push sequence for the sorted nodes
+            for node in chiplet_nodes_sorted:
+                chiplet_sv.append("    fork")
+                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_aw(TASK_QUEUE_BASE, '0);")
+                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_w({node.node_name}, {{HOST_DW/8{{1'b1}}}});")
+                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.recv_b(resp_chip{chiplet_id});")
+                chiplet_sv.append("    join_none")
+                chiplet_sv.append("    #50;")
+
+            chiplet_sv.append("  end")
+            sv_strings.append("\n".join(chiplet_sv))
+
+        # Combine all chiplet strings
+        return "\n\n".join(sv_strings)

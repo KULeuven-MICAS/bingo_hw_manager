@@ -26,14 +26,15 @@ module bingo_hw_manager_dep_check_sum #(
     counter #(
         .WIDTH(CHECKSUM_WIDTH)
     ) i_counter (
-        .clk_i  (clk_i        ),
-        .rst_ni (rst_ni       ),
-        .clear_i(counter_clear),
-        .en_i   (counter_en   ),
-        .load_i (1'b0         ),
-        .down_i (1'b0         ),
-        .d_i    ('0           ),
-        .q_o    (counter_q    )
+        .clk_i     (clk_i        ),
+        .rst_ni    (rst_ni       ),
+        .clear_i   (counter_clear),
+        .en_i      (counter_en   ),
+        .load_i    (1'b0         ),
+        .down_i    (1'b0         ),
+        .d_i       ('0           ),
+        .q_o       (counter_q    ),
+        .overflow_o(/* unused */)
     );
     always_comb begin : compose_counter_signal
         dep_check_sum_ready_o = (counter_q == dep_check_sum_i);

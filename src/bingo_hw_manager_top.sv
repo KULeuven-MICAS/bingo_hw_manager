@@ -156,7 +156,7 @@ module bingo_hw_manager_top #(
 
     localparam int unsigned ChipletSetTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_set_task_desc_t);
     localparam int unsigned ReservedBitsForChipletSetTaskDesc = HostAxiLiteDataWidth - ChipletSetTaskDescWidth;
-    if (ChipletSetTaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    if (ChipletSetTaskDescWidth>HostAxiLiteDataWidth) begin : gen_chiplet_dep_set_task_desc_width_check
         initial begin
         $error("Chiplet Set Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletSetTaskDescWidth, HostAxiLiteDataWidth);
         $finish;
@@ -169,8 +169,9 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2;
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1;
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0;
-        logic [2:0]                                     num_dep_set;
+        logic [1:0]                                     num_dep_set;
         logic                                           dep_set_all;
+        bingo_hw_manager_assigned_core_id_t             assigned_core_id;
         bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id;
         bingo_hw_manager_task_id_t                      task_id;
         bingo_hw_manager_task_type_t                    task_type;
@@ -185,7 +186,7 @@ module bingo_hw_manager_top #(
     } bingo_hw_manager_chiplet_dep_check_task_desc_t;    
     localparam int unsigned ChipletCheckTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_check_task_desc_t);
     localparam int unsigned ReservedBitsForChipletCheckTaskDesc = HostAxiLiteDataWidth - ChipletCheckTaskDescWidth;
-    if (ChipletCheckTaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    if (ChipletCheckTaskDescWidth>HostAxiLiteDataWidth) begin : gen_chiplet_dep_check_task_desc_width_check
         initial begin
         $error("Chiplet Check Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletCheckTaskDescWidth, HostAxiLiteDataWidth);
         $finish;
@@ -199,6 +200,30 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
     } bingo_hw_manager_chiplet_dep_check_task_desc_full_t;        
+
+    // Done info struct
+    typedef struct packed{
+        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
+        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_t;
+
+    localparam int unsigned DoneInfoWidth = $bits(bingo_hw_manager_done_info_t);
+    localparam int unsigned ReservedBitsForDoneInfo = DeviceAxiLiteDataWidth - DoneInfoWidth;
+    if (DoneInfoWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_width_check
+        initial begin
+        $error("Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DeviceAxiLiteDataWidth);
+        $finish;
+        end
+    end
+
+    typedef struct packed{
+        logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
+        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
+        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_full_t;
+
 
     //----- End of Type definitions ------------------------------------//
 
@@ -260,6 +285,7 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////
     // H2H Dep Check sum signals
     //////////////////////////////////////////////////////////
+    bingo_hw_manager_chiplet_dep_check_task_desc_full_t h2h_dep_check_task_desc;
     logic                   dep_check_sum_valid;
     logic                   dep_check_sum_ready;
     logic [ChipIdWidth-1:0] dep_check_sum;
@@ -293,10 +319,9 @@ module bingo_hw_manager_top #(
     // Each core type has its own demux
 
     typedef logic [1:0]                               is_dummy_set_task_demux_oup_t;
-    typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0] is_dummy_set_task_demux_oup_sel_t;
     logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_inp_valid;
     logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_inp_ready;
-    is_dummy_set_task_demux_oup_sel_t    [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_sel;
+    logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_sel;
     is_dummy_set_task_demux_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_valid;
     is_dummy_set_task_demux_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_ready;
 
@@ -319,14 +344,6 @@ module bingo_hw_manager_top #(
     logic                             [NUM_CORES_PER_CLUSTER-1:0] stream_fork_inp_ready;
     stream_fork_oup_t                 [NUM_CORES_PER_CLUSTER-1:0] stream_fork_oup_valid;
     stream_fork_oup_t                 [NUM_CORES_PER_CLUSTER-1:0] stream_fork_oup_ready;
-
-
-    ////////////////////////////////
-    // Stream demux dep check cluster id
-    ////////////////////////////////
-    // We only need the sel signal here
-    typedef logic [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0] dep_check_cluster_id_demux_oup_sel_t;
-    dep_check_cluster_id_demux_oup_sel_t [NUM_CORES_PER_CLUSTER-1:0] dep_check_cluster_id_demux_oup_sel;
     ////////////////////////////////
     // dep matrix demux signals
     ////////////////////////////////
@@ -422,37 +439,6 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_dep_code_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_data;
     logic                       [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_valid;
     logic                       [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_ready;
-
-
-    //////////////////////
-    // Done queue signals
-    //////////////////////
-
-    // Done info struct
-
-    typedef struct packed{
-
-        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
-        bingo_hw_manager_assigned_core_t           assigned_core_id;
-        bingo_hw_manager_task_id_t                 task_id;
-    } bingo_hw_manager_done_info_t;
-
-    localparam int unsigned DoneInfoWidth = $bits(bingo_hw_manager_done_info_t);
-    localparam int unsigned ReservedBitsForDoneInfo = DeviceAxiLiteDataWidth - DoneInfoWidth;
-    if (DoneInfoWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_width_check
-        initial begin
-        $error("Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DeviceAxiLiteDataWidth);
-        $finish;
-        end
-    end
-
-    typedef struct packed{
-        logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
-        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
-        bingo_hw_manager_assigned_core_t           assigned_core_id;
-        bingo_hw_manager_task_id_t                 task_id;
-    } bingo_hw_manager_done_info_full_t;
-
     // Done Queue signals
     bingo_hw_manager_done_info_full_t    cur_done_queue_info;
     logic [DeviceAxiLiteDataWidth-1:0]   done_queue_mbox_data;
@@ -617,7 +603,8 @@ module bingo_hw_manager_top #(
     always_comb begin : compose_h2h_dep_check_sum_signals
         dep_check_sum_valid = stream_demux_is_chiplet_dep_check_task_oup_valid[1];
         dep_set_sum_valid = !h2h_chiplet_done_queue_mbox_empty;
-        dep_check_sum = bingo_hw_manager_chiplet_dep_check_task_desc_full_t'(task_queue_mbox_data).dep_check_sum;
+        h2h_dep_check_task_desc = bingo_hw_manager_chiplet_dep_check_task_desc_full_t'(task_queue_mbox_data);
+        dep_check_sum = h2h_dep_check_task_desc.dep_check_sum;
     end
 
 
@@ -635,8 +622,7 @@ module bingo_hw_manager_top #(
     );
     always_comb begin: compose_stream_demux_core_type_signals
         stream_demux_core_type_inp_valid = stream_demux_is_chiplet_dep_check_task_oup_valid[0];
-        stream_demux_core_type_oup_sel = '0;
-        stream_demux_core_type_oup_sel[cur_task_desc.assigned_core_id] = 1'b1;
+        stream_demux_core_type_oup_sel = cur_task_desc.assigned_core_id;
         for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
             stream_demux_core_type_oup_ready[core] = ~waiting_dep_check_queue_full[core];
         end

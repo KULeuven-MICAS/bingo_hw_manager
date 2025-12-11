@@ -10,19 +10,21 @@ module bingo_hw_manager_h2h_dep_set #(
     parameter int unsigned HostAxiLiteDataWidth = 64,
     parameter type h2h_axi_lite_out_req_t                = logic,
     parameter type h2h_axi_lite_out_resp_t               = logic,
-    parameter type bingo_hw_manager_chiplet_set_task_desc_full_t = logic,
+    parameter type bingo_hw_manager_chiplet_dep_set_task_desc_full_t = logic,
     // typedef struct packed{
     //     logic [ReservedBitsForChipletSetTaskDesc-1:0]   reserved_bits;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_3;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0;
-    //     logic [2:0]                                     num_dep_set;
+    //     logic [1:0]                                     num_dep_set;
     //     logic                                           dep_set_all;
+    //     bingo_hw_manager_assigned_core_id_t             assigned_core_id;
     //     bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id;
     //     bingo_hw_manager_task_id_t                      task_id;
     //     bingo_hw_manager_task_type_t                    task_type;
-    // } bingo_hw_manager_chiplet_set_task_desc_full_t; 
+    // } bingo_hw_manager_chiplet_dep_set_task_desc_full_t;
+    // } bingo_hw_manager_chiplet_dep_set_task_desc_full_t; 
     // Now we put maximum 4 dependencies for each h2h done issue task
     // If want more, the runtime should issue multiple tasks
     // Dependent parameters, DO NOT OVERRIDE!
@@ -43,7 +45,7 @@ module bingo_hw_manager_h2h_dep_set #(
     //  Get the h2h set info from the task queue
     //  The data/valid/ready interface from FIFO
     //  After sending all the h2h done signals, it will assert ready
-    input bingo_hw_manager_chiplet_set_task_desc_full_t      h2h_dep_set_task_desc_i,
+    input bingo_hw_manager_chiplet_dep_set_task_desc_full_t  h2h_dep_set_task_desc_i,
     input logic                                              h2h_dep_set_task_desc_valid_i,
     output logic                                             h2h_dep_set_task_desc_ready_o
 );
@@ -69,7 +71,7 @@ module bingo_hw_manager_h2h_dep_set #(
         h2h_dep_set_IDLE,
         h2h_dep_set_SEND_AW,
         h2h_dep_set_SEND_W,
-        h2h_dep_set_FINISH,
+        h2h_dep_set_FINISH
     } h2h_dep_set_fsm_t;
 
     h2h_dep_set_fsm_t cur_state, next_state;
@@ -89,7 +91,7 @@ module bingo_hw_manager_h2h_dep_set #(
         case (cur_state)
             h2h_dep_set_IDLE: begin
                 if (h2h_dep_set_task_desc_valid_i) begin
-                    next_state = h2h_dep_set_SEND;
+                    next_state = h2h_dep_set_SEND_AW;
                 end
             end
             h2h_dep_set_SEND_AW: begin
@@ -106,7 +108,7 @@ module bingo_hw_manager_h2h_dep_set #(
                     if (h2h_dep_set_task_desc_i.dep_set_all) begin
                         next_state = h2h_dep_set_FINISH;
                     end else begin
-                        if (h2h_done_counter_q == (h2h_dep_set_task_desc_i.num_dep_set - 1)) begin
+                        if (h2h_done_counter_q == (h2h_dep_set_task_desc_i.num_dep_set)) begin
                             next_state = h2h_dep_set_FINISH;
                         end else begin
                             next_state = h2h_dep_set_SEND_AW;
@@ -143,12 +145,12 @@ module bingo_hw_manager_h2h_dep_set #(
             // To make it easy, make two states for sending AW and W channels
             h2h_dep_set_SEND_AW: begin
                 // In the SEND AW, it will first check if this is a set all
-                // if set_all=1 -> Aw = {8'0xFF,           40'h2h_done_queue_base_addr_i}
-                // if set_all=0 -> Aw = {8'current_chip_id,40'h2h_done_queue_base_addr_i}
+                // if set_all=1 -> Aw = {8'0xFF,           40'h2h_mailbox_base_addr_i}
+                // if set_all=0 -> Aw = {8'current_chip_id,40'h2h_mailbox_base_addr_i}
                 h2h_to_remote_axi_lite_req_o.aw_valid = 1'b1;
                 if (h2h_dep_set_task_desc_i.dep_set_all) begin
                     h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-1 -: ChipIdWidth] = '1; // all 1 means broadcast
-                    h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-ChipIdWidth-1:0] = h2h_done_queue_base_addr_i[HostAxiLiteAddrWidth-ChipIdWidth-1:0];
+                    h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-ChipIdWidth-1:0] = h2h_mailbox_base_addr_i[HostAxiLiteAddrWidth-ChipIdWidth-1:0];
                     h2h_to_remote_axi_lite_req_o.aw.prot = '0;
                 end else begin
                     case (h2h_done_counter_q)
@@ -158,7 +160,7 @@ module bingo_hw_manager_h2h_dep_set #(
                         2'b11:  h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-1 -: ChipIdWidth] = h2h_dep_set_task_desc_i.dep_set_chiplet_id_3;
                         default: h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-1 -: ChipIdWidth] = '0;
                     endcase
-                    h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-ChipIdWidth-1:0] = h2h_done_queue_base_addr_i[HostAxiLiteAddrWidth-ChipIdWidth-1:0];
+                    h2h_to_remote_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-ChipIdWidth-1:0] = h2h_mailbox_base_addr_i[HostAxiLiteAddrWidth-ChipIdWidth-1:0];
                     h2h_to_remote_axi_lite_req_o.aw.prot = '0;
                 end
                 h2h_dep_set_task_desc_ready_o = 1'b0;

@@ -17,7 +17,7 @@ module bingo_hw_manager_h2h_dep_set #(
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1;
     //     bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0;
-    //     logic [2:0]                                     num_dep;
+    //     logic [2:0]                                     num_dep_set;
     //     logic                                           dep_set_all;
     //     bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id;
     //     bingo_hw_manager_task_id_t                      task_id;
@@ -106,7 +106,7 @@ module bingo_hw_manager_h2h_dep_set #(
                     if (h2h_dep_set_task_desc_i.dep_set_all) begin
                         next_state = h2h_dep_set_FINISH;
                     end else begin
-                        if (h2h_done_counter_q == (h2h_dep_set_task_desc_i.num_dep - 1)) begin
+                        if (h2h_done_counter_q == (h2h_dep_set_task_desc_i.num_dep_set - 1)) begin
                             next_state = h2h_dep_set_FINISH;
                         end else begin
                             next_state = h2h_dep_set_SEND_AW;

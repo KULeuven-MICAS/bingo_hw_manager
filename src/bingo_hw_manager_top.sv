@@ -147,7 +147,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_2;
         bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_1;
         bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_0;
-        logic [2:0]                                  num_dep;
+        logic [2:0]                                  num_dep_set;
         logic                                        dep_set_all;
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
@@ -169,7 +169,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2;
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1;
         bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0;
-        logic [2:0]                                     num_dep;
+        logic [2:0]                                     num_dep_set;
         logic                                           dep_set_all;
         bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id;
         bingo_hw_manager_task_id_t                      task_id;

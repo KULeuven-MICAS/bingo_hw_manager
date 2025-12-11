@@ -296,3 +296,7 @@ bingo_dfg.bingo_visualize_dfg("dfg_after_add_dummy_dep_set_nodes.png")
 # Transform the DFG to add dummy check nodes
 bingo_dfg.bingo_transform_dfg_add_dummy_check_nodes()
 bingo_dfg.bingo_visualize_dfg("dfg_after_add_dummy_dep_check_nodes.png")
+# Set the Dep Set and Dep Check for the normal nodes
+bingo_dfg.bingo_assign_normal_node_dep_set_info()
+bingo_dfg.bingo_assign_normal_node_dep_check_info()
+print(bingo_dfg.bingo_emit_sv())

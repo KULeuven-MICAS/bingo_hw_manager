@@ -165,6 +165,16 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         #          |           |
         #          v           v
         #         dma(Cl0)    gemm(Cl1)
+        # We need the dummy set task
+        #            simd(Cl0)
+        #           /         \\
+        #          |           || <--  notice the double line here, it is a fake edge 
+        #          |           ||      since we explicitly create the dummy task with the same type of the simd task
+        #          v           vv      all we need to do is to push the dummy task after the simd task to describe this dependency
+        #         dma(Cl0)    dummy dep set simd task(Cl1)
+        #                      |
+        #                      v
+        #                    gemm(Cl1)
         for cur_node in self.node_list:
             local_successors = [
                 succ for succ in self.successors(cur_node)
@@ -182,6 +192,10 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     )
                     dummy_set_node.node_type = "dummy"
                     dummy_set_node.dep_set_enable = True
+                    dummy_set_node.local_dep_set_list = [local_successors[i].assigned_core_id]
+                    dummy_set_node.local_dep_set_cluster_id = local_successors[i].assigned_cluster_id
+                    dummy_set_node.dep_check_enable = False
+                    dummy_set_node.local_dep_check_list = []
                     # Add the dummy set node to the graph
                     self.bingo_add_node(dummy_set_node)
                     # Redirect edges
@@ -224,6 +238,10 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         )
                         dummy_check_node.node_type = "dummy"
                         dummy_check_node.dep_check_enable = True
+                        dummy_check_node.local_dep_check_list = [preds[i].assigned_core_id]
+                        dummy_check_node.dep_set_enable = False
+                        dummy_check_node.local_dep_set_list = []
+                        dummy_check_node.local_dep_set_cluster_id = 0
                         # Add the dummy check node to the graph
                         self.bingo_add_node(dummy_check_node)
                         # Redirect edges
@@ -233,6 +251,60 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         # Add edge from dummy_check_node to cur_node
                         self.bingo_add_edge(dummy_check_node, cur_node)
 
+
+    def bingo_assign_normal_node_dep_check_info(self) -> None:
+        """Assign the dep check info for normal nodes."""
+        # Iterate over all nodes in the graph
+        for cur_node in self.node_list:
+            # Check if the node's task_type is "normal"
+            if cur_node.node_type == "normal":
+                # Find local predecessors (same chiplet ID) 
+                # And not dummy check
+                # And not chiplet dep check
+                local_predecessors = [
+                    pred for pred in self.predecessors(cur_node)
+                    if pred.assigned_chiplet_id == cur_node.assigned_chiplet_id and not (pred.node_type == "dummy" and pred.dep_check_enable) and not (pred.node_type == "chiplet_dep_check")
+                ]
+
+                # If there are local predecessors, assign dep_check info
+                if local_predecessors:
+                    cur_node.dep_check_enable = True
+                    cur_node.local_dep_check_list = [pred.assigned_core_id for pred in local_predecessors]
+                    # Sanity check if there are multiple same core_id
+                    if len(cur_node.local_dep_check_list) != len(set(cur_node.local_dep_check_list)):
+                        print(f"Warning: Multiple local predecessors with the same core_id for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
+                    print(f"Assigned dep_check_info for node {cur_node.node_name}: "
+                          f"dep_check_enable=True, dep_check_list={cur_node.local_dep_check_list}")
+                else:
+                    # If no local predecessors, disable dep_check
+                    cur_node.dep_check_enable = False
+                    cur_node.local_dep_check_list = []
+                    print(f"No local predecessors for node {cur_node.node_name}. "
+                          f"dep_check_enable=False")
+
+    def bingo_assign_normal_node_dep_set_info(self) -> None:
+        """Assign the dep set info for normal nodes."""
+        # Iterate over all nodes in the graph
+        for cur_node in self.node_list:
+           # Check if the node's task_type is "normal"
+           if cur_node.node_type == "normal":
+                # Find local succs (same chiplet ID) 
+                # And not dummy set
+                # And not chiplet dep set
+                local_successors = [
+                    succ for succ in self.successors(cur_node)
+                    if succ.assigned_chiplet_id == cur_node.assigned_chiplet_id and not (succ.node_type == "dummy" and succ.dep_set_enable) and not (succ.node_type == "chiplet_dep_set")
+                ]
+                if len(local_successors)>1:
+                    print(f"Warning: More than one local successor for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
+                elif len(local_successors)==1:
+                    cur_node.dep_set_enable = True
+                    cur_node.local_dep_set_list = [succ.assigned_core_id for succ in local_successors]
+                    cur_node.local_dep_set_cluster_id = local_successors[0].assigned_cluster_id
+                else:
+                    cur_node.dep_set_enable = False
+                    cur_node.local_dep_set_list = []
+                    cur_node.local_dep_set_cluster_id = 0
 
     def bingo_visualize_dfg(self, filename: str = "dfg_visualization.png", figsize: tuple = (10, 8)) -> None:
         """Visualize the DFG with different shapes for task types and colors for chiplets."""
@@ -306,3 +378,16 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # Save the visualization to a file
         plt.savefig(filename)
         plt.show()
+        
+    def bingo_emit_sv(self) -> str:
+        """Emit the SystemVerilog string for all nodes in the DFG."""
+        sv_strings = []
+
+        # Iterate over all nodes in the graph
+        for node in self.node_list:
+            # Call the emit_sv function of each node
+            sv_strings.append(node.emit_sv())
+
+        # Combine all the SystemVerilog strings with newlines
+        return "\n\n".join(sv_strings)
+

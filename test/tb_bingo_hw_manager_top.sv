@@ -378,38 +378,118 @@ module tb_bingo_hw_manager_top;
     );    
   end
 
-
-  // Tomorrow: Add stimulus threads to push tasks into the task queue
-  // ...
   // ---------------------------------------------------------------------------
   // Task descriptor packing helper
   // ---------------------------------------------------------------------------
 
-  function automatic bingo_hw_manager_task_desc_full_t pack_task(
-    input bingo_hw_manager_task_id_t    task_id,
-    input bingo_hw_manager_task_type_t  core_sel,
-    input logic                         is_dummy,
-    input logic                         dep_check_en,
-    input bingo_hw_manager_dep_code_t   dep_check_code,
-    input bingo_hw_manager_cluster_id_t dep_check_cluster_idx,
-    input logic                         dep_check_chiplet_en,
-    input bingo_hw_manager_chiplet_check_code_t dep_check_chiplet_code,
-    input logic                         dep_set_en,
-    input bingo_hw_manager_dep_code_t   dep_set_code,
-    input bingo_hw_manager_cluster_id_t dep_set_cluster_idx
+  function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input bingo_hw_manager_assigned_cluster_id_t assigned_cluster_id,
+    input bingo_hw_manager_assigned_core_id_t    assigned_core_id,
+    input logic                                  dep_check_en,
+    input bingo_hw_manager_dep_code_t            dep_check_code,
+    input logic                                  dep_set_en,
+    input bingo_hw_manager_dep_code_t            dep_set_code,
+    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
   );
+    assert(task_type==2'b00);
     bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
     tmp.task_id                          = task_id;
-    tmp.task_type                        = core_sel;
-    tmp.is_dummy                         = is_dummy;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.assigned_cluster_id              = assigned_cluster_id;
+    tmp.assigned_core_id                 = assigned_core_id;
     tmp.dep_check_info.dep_check_en      = dep_check_en;
     tmp.dep_check_info.dep_check_code    = dep_check_code;
-    tmp.dep_check_info.dep_check_cluster_idx = dep_check_cluster_idx;
-    tmp.dep_check_info.dep_check_chiplet_en = dep_check_chiplet_en;
-    tmp.dep_check_info.dep_check_chiplet_code = dep_check_chiplet_code;
     tmp.dep_set_info.dep_set_en          = dep_set_en;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
-    tmp.dep_set_info.dep_set_cluster_idx = dep_set_cluster_idx;
+    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+
+  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input logic                                  dep_check_en,
+    input bingo_hw_manager_dep_code_t            dep_check_code  
+  );
+    assert(task_type==2'b01 && dep_check_en==1'b1);
+    bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.assigned_cluster_id              = '1;
+    tmp.assigned_core_id                 = '1;
+    tmp.dep_check_info.dep_check_en      = 1'b1;
+    tmp.dep_check_info.dep_check_code    = dep_check_code;
+    tmp.dep_set_info                     = '0;
+    tmp.reserved_bits                    = '0;
+  endfunction
+
+  function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
+    input bingo_hw_manager_task_type_t           task_type,
+    input bingo_hw_manager_task_id_t             task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
+    input logic                                  dep_set_en,
+    input bingo_hw_manager_dep_code_t            dep_set_code,
+    input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id
+  );
+    assert(task_type==2'b01 && dep_set_en==1'b1);
+    bingo_hw_manager_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_check_info                   = '0;
+    tmp.dep_set_info.dep_set_en          = dep_set_en;
+    tmp.dep_set_info.dep_set_code        = dep_set_code;
+    tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+  function automatic bingo_hw_manager_chiplet_dep_set_task_desc_full_t pack_chiplet_dep_set_task(
+    input bingo_hw_manager_task_type_t                    task_type,
+    input bingo_hw_manager_task_id_t                      task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
+    input logic                                           dep_set_all,
+    input logic [2:0]                                     num_dep,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_3,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0
+  );
+    assert(task_type==2'b10);
+    bingo_hw_manager_chiplet_dep_set_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_set_all                      = dep_set_all;
+    tmp.num_dep                          = num_dep;
+    tmp.dep_set_chiplet_id_0             = dep_set_chiplet_id_0;
+    tmp.dep_set_chiplet_id_1             = dep_set_chiplet_id_1;
+    tmp.dep_set_chiplet_id_2             = dep_set_chiplet_id_2;
+    tmp.dep_set_chiplet_id_3             = dep_set_chiplet_id_3;
+    tmp.reserved_bits                    = '0;
+    return tmp;
+  endfunction
+
+  function automatic bingo_hw_manager_chiplet_dep_check_task_desc_full_t pack_chiplet_dep_check_task(
+    input bingo_hw_manager_task_type_t                    task_type,
+    input bingo_hw_manager_task_id_t                      task_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id,
+    input bingo_hw_manager_assigned_chiplet_id_t          dep_check_sum
+  );
+    assert(task_type==2'b11);
+    bingo_hw_manager_chiplet_dep_check_task_desc_full_t tmp;
+    tmp.task_type                        = task_type;
+    tmp.task_id                          = task_id;
+    tmp.assigned_chiplet_id              = assigned_chiplet_id;
+    tmp.dep_check_sum                    = dep_check_sum;
     tmp.reserved_bits                    = '0;
     return tmp;
   endfunction
@@ -417,13 +497,6 @@ module tb_bingo_hw_manager_top;
   // ---------------------------------------------------------------------------
   // Stimulus threads
   // ---------------------------------------------------------------------------
-
-  // We will use 4 chiplets to test the top module
-  //        DMA (Chiplet0, Cluster0, Core0)
-  //         
-
-
-
 
   // Host pushes three tasks after reset
   initial begin : host_sequence
@@ -437,9 +510,6 @@ module tb_bingo_hw_manager_top;
     @(posedge clk_i);
 
     // Define tasks
-    // Task 0: ID 0, Core 0, Cluster 0, no dep check, dep set: set core 1, cluster 0
-    // Task 1: ID 1, Core 1, Cluster 0, dep check: check cluster0, core0 dep set: set cluster1, core2
-    // Task 2: ID 2, Core 2, Cluster 1, dep check: wait for cluster0, core1, no dep set
     task0 = pack_task( 16'd1,      // task id
                        2'd0,      // core sel
                        1'b0,    // is dummy

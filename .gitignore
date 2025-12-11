@@ -6,4 +6,4 @@ transcript
 *.wlf
 work-vsim/
 tb/
-
+.vscode

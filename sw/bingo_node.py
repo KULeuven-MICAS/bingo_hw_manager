@@ -17,16 +17,14 @@ class BingoNode(metaclass=ABCMeta):
         self._assigned_chiplet_id = assigned_chiplet_id
         self._assigned_cluster_id = assigned_cluster_id
         self._assigned_core_id = assigned_core_id
-        self._node_type: Literal['normal', 'dummy', 'chiplet_dep_set', 'chiplet_dep_check'] = "normal"
+        self._node_type: Literal['normal', 'dummy'] = "normal"
         self._dep_check_enable: bool = False
+        self._dep_check_list: list[int] = []
         self._dep_set_enable: bool = False
-        self._local_dep_check_list: list[int] = []
-        self._local_dep_set_list: list[int] = []
-        self._local_dep_set_cluster_id: int = None
-        self._remote_num_dep: int = 0
         self._remote_dep_set_all: bool = False
-        self._remote_dep_set_chiplet_id: list[int] = []
-        self._dep_check_sum: int = 0
+        self._dep_set_list: list[int] = []
+        self._dep_set_chiplet_id: int = 0
+        self._dep_set_cluster_id: int = 0
 
     # Getters and Setters
     @property
@@ -70,68 +68,12 @@ class BingoNode(metaclass=ABCMeta):
         self._assigned_core_id = value
 
     @property
-    def node_type(self) -> Literal['normal', 'dummy', 'chiplet_dep_set', 'chiplet_dep_check']:
+    def node_type(self) -> Literal['normal', 'dummy']:
         return self._node_type
 
     @node_type.setter
-    def node_type(self, value: Literal['normal', 'dummy', 'chiplet_dep_set', 'chiplet_dep_check']) -> None:
+    def node_type(self, value: Literal['normal', 'dummy']) -> None:
         self._node_type = value
-
-    @property
-    def local_dep_check_list(self) -> list[int]:
-        return self._local_dep_check_list
-
-    @local_dep_check_list.setter
-    def local_dep_check_list(self, value: list[int]) -> None:
-        self._local_dep_check_list = value
-
-    @property
-    def local_dep_set_list(self) -> list[int]:
-        return self._local_dep_set_list
-
-    @local_dep_set_list.setter
-    def local_dep_set_list(self, value: list[int]) -> None:
-        self._local_dep_set_list = value
-
-    @property
-    def local_dep_set_cluster_id(self) -> int:
-        return self._local_dep_set_cluster_id
-
-    @local_dep_set_cluster_id.setter
-    def local_dep_set_cluster_id(self, value: int) -> None:
-        self._local_dep_set_cluster_id = value
-
-    @property
-    def remote_num_dep(self) -> int:
-        return self._remote_num_dep
-
-    @remote_num_dep.setter
-    def remote_num_dep(self, value: int) -> None:
-        self._remote_num_dep = value
-
-    @property
-    def remote_dep_set_all(self) -> bool:
-        return self._remote_dep_set_all
-
-    @remote_dep_set_all.setter
-    def remote_dep_set_all(self, value: bool) -> None:
-        self._remote_dep_set_all = value
-
-    @property
-    def remote_dep_set_chiplet_id(self) -> list[int]:
-        return self._remote_dep_set_chiplet_id
-
-    @remote_dep_set_chiplet_id.setter
-    def remote_dep_set_chiplet_id(self, value: list[int]) -> None:
-        self._remote_dep_set_chiplet_id = value
-
-    @property
-    def dep_check_sum(self) -> int:
-        return self._dep_check_sum
-
-    @dep_check_sum.setter
-    def dep_check_sum(self, value: int) -> None:
-        self._dep_check_sum = value
 
     @property
     def dep_check_enable(self) -> bool:
@@ -146,6 +88,14 @@ class BingoNode(metaclass=ABCMeta):
         self._dep_check_enable = value
 
     @property
+    def dep_check_list(self) -> list[int]:
+        return self._dep_check_list
+
+    @dep_check_list.setter
+    def dep_check_list(self, value: list[int]) -> None:
+        self._dep_check_list = value
+
+    @property
     def dep_set_enable(self) -> bool:
         """Get the dep_set_enable flag."""
         return self._dep_set_enable
@@ -156,6 +106,38 @@ class BingoNode(metaclass=ABCMeta):
         if not isinstance(value, bool):
             raise ValueError("dep_set_enable must be a boolean value.")
         self._dep_set_enable = value
+
+    @property
+    def remote_dep_set_all(self) -> bool:
+        return self._remote_dep_set_all
+
+    @remote_dep_set_all.setter
+    def remote_dep_set_all(self, value: bool) -> None:
+        self._remote_dep_set_all = value
+
+    @property
+    def dep_set_list(self) -> list[int]:
+        return self._dep_set_list
+
+    @dep_set_list.setter
+    def dep_set_list(self, value: list[int]) -> None:
+        self._dep_set_list = value
+
+    @property
+    def dep_set_chiplet_id(self) -> int:
+        return self._dep_set_chiplet_id
+
+    @dep_set_chiplet_id.setter
+    def dep_set_chiplet_id(self, value: int) -> None:
+        self._dep_set_chiplet_id = value
+
+    @property
+    def dep_set_cluster_id(self) -> int:
+        return self._dep_set_cluster_id
+
+    @dep_set_cluster_id.setter
+    def dep_set_cluster_id(self, value: int) -> None:
+        self._dep_set_cluster_id = value
 
     def __str__(self):
         return self._node_name if self._node_name else f"Node_{self._node_id}"
@@ -174,8 +156,8 @@ class BingoNode(metaclass=ABCMeta):
         # Determine the appropriate pack function based on the node type
         if self._node_type == "normal":
             pack_function = "pack_normal_task"
-            dep_check_code = list_to_one_hot(self._local_dep_check_list)
-            dep_set_code = list_to_one_hot(self._local_dep_set_list)
+            dep_check_code = list_to_one_hot(self._dep_check_list)
+            dep_set_code = list_to_one_hot(self._dep_set_list)
             sv_str = (
                 f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                 f"    2'b00, // task_type\n"
@@ -187,13 +169,13 @@ class BingoNode(metaclass=ABCMeta):
                 f"    {dep_check_code}, // dep_check_code\n"
                 f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
                 f"    {dep_set_code}, // dep_set_code\n"
-                f"    {self._local_dep_set_cluster_id} // dep_set_cluster_id\n"
+                f"    {self._dep_set_cluster_id} // dep_set_cluster_id\n"
                 f");"
             )
         elif self._node_type == "dummy":
             pack_function = "pack_dummy_check_task" if self._dep_check_enable else "pack_dummy_set_task"
             if self._dep_check_enable:
-                dep_check_code = list_to_one_hot(self._local_dep_check_list)
+                dep_check_code = list_to_one_hot(self._dep_check_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                     f"    2'b01, // task_type\n"
@@ -204,7 +186,7 @@ class BingoNode(metaclass=ABCMeta):
                     f");"
                 )
             else:
-                dep_set_code = list_to_one_hot(self._local_dep_set_list)
+                dep_set_code = list_to_one_hot(self._dep_set_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
                     f"    2'b01, // task_type\n"
@@ -212,34 +194,8 @@ class BingoNode(metaclass=ABCMeta):
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
                     f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
                     f"    {dep_set_code}, // dep_set_code\n"
-                    f"    {self._local_dep_set_cluster_id} // dep_set_cluster_id\n"
-                    f");"
+                    f"    {self._dep_set_cluster_id} // dep_set_cluster_id\n"
                 )
-        elif self._node_type == "chiplet_dep_set":
-            pack_function = "pack_chiplet_dep_set_task"
-            sv_str = (
-                f"bingo_hw_manager_chiplet_dep_set_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                f"    2'b10, // task_type\n"
-                f"    16'd{self._node_id}, // task_id\n"
-                f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
-                f"    1'b{int(self._remote_dep_set_all)}, // dep_set_all\n"
-                f"    3'd{self._remote_num_dep}, // num_dep\n"
-                f"    {self._remote_dep_set_chiplet_id[3] if len(self._remote_dep_set_chiplet_id) > 3 else 0}, // dep_set_chiplet_id_3\n"
-                f"    {self._remote_dep_set_chiplet_id[2] if len(self._remote_dep_set_chiplet_id) > 2 else 0}, // dep_set_chiplet_id_2\n"
-                f"    {self._remote_dep_set_chiplet_id[1] if len(self._remote_dep_set_chiplet_id) > 1 else 0}, // dep_set_chiplet_id_1\n"
-                f"    {self._remote_dep_set_chiplet_id[0] if len(self._remote_dep_set_chiplet_id) > 0 else 0} // dep_set_chiplet_id_0\n"
-                f");"
-            )
-        elif self._node_type == "chiplet_dep_check":
-            pack_function = "pack_chiplet_dep_check_task"
-            sv_str = (
-                f"bingo_hw_manager_chiplet_dep_check_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                f"    2'b11, // task_type\n"
-                f"    16'd{self._node_id}, // task_id\n"
-                f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
-                f"    {self._dep_check_sum} // dep_check_sum\n"
-                f");"
-            )
         else:
             raise ValueError(f"Unsupported node type: {self._node_type}")
 

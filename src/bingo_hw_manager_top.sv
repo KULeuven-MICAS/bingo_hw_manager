@@ -13,26 +13,19 @@ module bingo_hw_manager_top #(
     // Host writes the task queue via 64bit AXI Lite
     parameter int unsigned HostAxiLiteAddrWidth = 48,
     parameter int unsigned HostAxiLiteDataWidth = 64,
-    parameter int unsigned TaskQueueDepth = 32,
-    parameter type task_queue_axi_lite_in_req_t = logic,
-    parameter type task_queue_axi_lite_in_resp_t = logic,
-    // The H2H chiplet done queue holds the completed tasks info from other chiplets
-    parameter int unsigned H2HDoneQueueDepth = 32,
-    parameter type h2h_axi_lite_in_req_t = logic,
-    parameter type h2h_axi_lite_in_resp_t = logic,
-    // The chiplet done issue interface to other chiplets
-    parameter type h2h_axi_lite_out_req_t = logic,
-    parameter type h2h_axi_lite_out_resp_t = logic,
-    // The done queue holds the completed tasks info from the devices
     // Device writes the done queue via 32bit AXI Lite
     parameter int unsigned DeviceAxiLiteAddrWidth = 48,
     parameter int unsigned DeviceAxiLiteDataWidth = 32,
+    // AXI Lite Interface types for host and device
+    parameter type host_axi_lite_req_t = logic,
+    parameter type host_axi_lite_resp_t = logic,
+    parameter type device_axi_lite_req_t = logic,
+    parameter type device_axi_lite_resp_t = logic,
+    // FIFO Depths
+    parameter int unsigned TaskQueueDepth = 32,
+    parameter int unsigned H2HDoneQueueDepth = 32,
     parameter int unsigned DoneQueueDepth = 32,
-    parameter type done_queue_axi_lite_in_req_t = logic,
-    parameter type done_queue_axi_lite_in_resp_t = logic,
     parameter int unsigned ReadyQueueDepth = 8,
-    parameter type ready_queue_axi_lite_in_req_t = logic,
-    parameter type ready_queue_axi_lite_in_resp_t = logic,
     // Dependent parameters, DO NOT OVERRIDE!
     parameter type chip_id_t = logic [ChipIdWidth-1:0],
     parameter type host_axi_lite_addr_t = logic [HostAxiLiteAddrWidth-1:0],
@@ -55,12 +48,12 @@ module bingo_hw_manager_top #(
     output task_queue_axi_lite_in_resp_t        task_queue_axi_lite_resp_o,
     // The chiplet set interface to other chiplets
     // HW Manager -----> Other chiplets
-    input  host_axi_lite_addr_t                 h2h_mailbox_base_addr_i,
-    output h2h_axi_lite_out_req_t               h2h_to_remote_axi_lite_req_o,
-    input  h2h_axi_lite_out_resp_t              h2h_to_remote_axi_lite_resp_i,
+    input  host_axi_lite_addr_t                 chiplet_mailbox_base_addr_i,
+    output h2h_axi_lite_out_req_t               to_remote_chiplet_axi_lite_req_o,
+    input  h2h_axi_lite_out_resp_t              to_remote_chiplet_axi_lite_resp_i,
     // The chiplet done interface from other chiplets
-    input  h2h_axi_lite_in_req_t                h2h_from_remote_axi_lite_req_i,
-    output h2h_axi_lite_in_resp_t               h2h_from_remote_axi_lite_resp_o,
+    input  h2h_axi_lite_in_req_t                from_remote_axi_lite_req_i,
+    output h2h_axi_lite_in_resp_t               from_remote_axi_lite_resp_o,
 
     // The done queue interface to the devices
     // Devices -----> Done Queue
@@ -82,13 +75,11 @@ module bingo_hw_manager_top #(
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
-    localparam int unsigned TaskIdWidth = 16;
+    localparam int unsigned TaskIdWidth = 12;
     // Task Type
-    // 00: Normal Task
-    // 01: Dummy Task to ensure local dep management
-    // 10：Chiplet Dep Check Task
-    // 11: Chiplet Dep Set Task
-    typedef logic [1:0                                 ] bingo_hw_manager_task_type_t;
+    // 0: Normal Task
+    // 1: Dummy Task
+    typedef logic                                        bingo_hw_manager_task_type_t;
     // Task ID
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
     // Assigned Chiplet ID
@@ -100,14 +91,16 @@ module bingo_hw_manager_top #(
     // Dependency check info struct
     typedef logic [NUM_CORES_PER_CLUSTER-1:0]            bingo_hw_manager_dep_code_t;
     typedef struct packed{
-        logic                                        dep_check_en;
         bingo_hw_manager_dep_code_t                  dep_check_code;
+        logic                                        dep_check_en;
     } bingo_hw_manager_dep_check_info_t;
     // Dependency set info struct
     typedef struct packed{
-        logic                                        dep_set_en;
         bingo_hw_manager_dep_code_t                  dep_set_code;
         bingo_hw_manager_assigned_cluster_id_t       dep_set_cluster_id;
+        bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id;
+        logic                                        dep_set_all_chiplet;
+        logic                                        dep_set_en;
     } bingo_hw_manager_dep_set_info_t;
 
     // Task info struct
@@ -141,66 +134,6 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_type_t                 task_type;
     } bingo_hw_manager_task_desc_full_t;
 
-    // Dep Set Type
-    typedef struct packed{
-        bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_3;
-        bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_2;
-        bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_1;
-        bingo_hw_manager_assigned_chiplet_id_t       dep_set_chiplet_id_0;
-        logic [2:0]                                  num_dep_set;
-        logic                                        dep_set_all;
-        bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
-        bingo_hw_manager_task_id_t                   task_id;
-        bingo_hw_manager_task_type_t                 task_type;
-    } bingo_hw_manager_chiplet_dep_set_task_desc_t;
-
-    localparam int unsigned ChipletSetTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_set_task_desc_t);
-    localparam int unsigned ReservedBitsForChipletSetTaskDesc = HostAxiLiteDataWidth - ChipletSetTaskDescWidth;
-    if (ChipletSetTaskDescWidth>HostAxiLiteDataWidth) begin : gen_chiplet_dep_set_task_desc_width_check
-        initial begin
-        $error("Chiplet Set Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletSetTaskDescWidth, HostAxiLiteDataWidth);
-        $finish;
-        end
-    end
-    // 64bit Chiplet Set Task Descriptor with reserved bits
-    typedef struct packed{
-        logic [ReservedBitsForChipletSetTaskDesc-1:0]   reserved_bits;
-        bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_3;
-        bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_2;
-        bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_1;
-        bingo_hw_manager_assigned_chiplet_id_t          dep_set_chiplet_id_0;
-        logic [1:0]                                     num_dep_set;
-        logic                                           dep_set_all;
-        bingo_hw_manager_assigned_core_id_t             assigned_core_id;
-        bingo_hw_manager_assigned_chiplet_id_t          assigned_chiplet_id;
-        bingo_hw_manager_task_id_t                      task_id;
-        bingo_hw_manager_task_type_t                    task_type;
-    } bingo_hw_manager_chiplet_dep_set_task_desc_full_t;
-
-    // Dep Check Type
-    typedef struct packed{
-        bingo_hw_manager_assigned_chiplet_id_t       dep_check_sum;
-        bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
-        bingo_hw_manager_task_id_t                   task_id;
-        bingo_hw_manager_task_type_t                 task_type;
-    } bingo_hw_manager_chiplet_dep_check_task_desc_t;    
-    localparam int unsigned ChipletCheckTaskDescWidth = $bits(bingo_hw_manager_chiplet_dep_check_task_desc_t);
-    localparam int unsigned ReservedBitsForChipletCheckTaskDesc = HostAxiLiteDataWidth - ChipletCheckTaskDescWidth;
-    if (ChipletCheckTaskDescWidth>HostAxiLiteDataWidth) begin : gen_chiplet_dep_check_task_desc_width_check
-        initial begin
-        $error("Chiplet Check Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ChipletCheckTaskDescWidth, HostAxiLiteDataWidth);
-        $finish;
-        end
-    end
-    //64bit Chiplet Check Task Descriptor with reserved bits
-    typedef struct packed{
-        logic [ReservedBitsForChipletCheckTaskDesc-1:0]   reserved_bits;
-        bingo_hw_manager_assigned_chiplet_id_t       dep_check_sum;
-        bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
-        bingo_hw_manager_task_id_t                   task_id;
-        bingo_hw_manager_task_type_t                 task_type;
-    } bingo_hw_manager_chiplet_dep_check_task_desc_full_t;        
-
     // Done info struct
     typedef struct packed{
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
@@ -224,10 +157,20 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_id_t                 task_id;
     } bingo_hw_manager_done_info_full_t;
 
+    typedef struct packed{
+        bingo_hw_manager_assigned_cluster_id_t     dep_matrix_id;
+        logic [NUM_CORES_PER_CLUSTER-1:0]          dep_matrix_col;
+        bingo_hw_manager_dep_code_t                dep_set_code;
+    } bingo_hw_manager_dep_matrix_set_meta_t;
 
+    typedef struct packed{
+        bingo_hw_manager_task_id_t           task_id;
+        bingo_hw_manager_dep_set_info_t      dep_set_info;
+    } bingo_hw_manager_checkout_task_desc_t;
     //----- End of Type definitions ------------------------------------//
 
     //----- Start of Signal declarations -------------------------------//
+
     /////////////////////////////////////////////////////////
     // Task Queue Signals
     /////////////////////////////////////////////////////////
@@ -237,62 +180,34 @@ module bingo_hw_manager_top #(
     logic                              task_queue_mbox_empty;
     logic                              task_queue_mbox_pop;
 
-    /////////////////////////////////////////////////////////
-    // Stream demux chiplet set task
-    /////////////////////////////////////////////////////////
-    // This demux is right behind the task queue
-    // It will check the taks_type==2'b11 to decide whether it is a chiplet dep set task
-    // It will block the task queue until the chiplet dep set task is finished
-    // This blocking design is to ensure the ordering of the chiplet dep set tasks
-    // [0]: Normal, Dummy, H2H Dep Check
-    // [1]: task_type == 2'b11 path (H2H Dep Set)
-    logic       stream_demux_is_chiplet_dep_set_task_inp_valid;
-    logic       stream_demux_is_chiplet_dep_set_task_inp_ready;
-    logic       stream_demux_is_chiplet_dep_set_task_oup_sel;
-    logic [1:0] stream_demux_is_chiplet_dep_set_task_oup_valid;
-    logic [1:0] stream_demux_is_chiplet_dep_set_task_oup_ready;
 
     /////////////////////////////////////////////////////////
-    // H2H Dep Set
+    // Chiplet Dep Set Issue
     /////////////////////////////////////////////////////////
-    // This module is to send the h2h chiplet done signal to other chiplets
-    // It will receive the chiplet dep set task from the task queue demux
-    // and then write the h2h mailbox with the current task's taskid to other chiplets
-    bingo_hw_manager_task_desc_full_t h2h_dep_set_task_desc;
-    logic                             h2h_dep_set_task_desc_valid;
-    logic                             h2h_dep_set_task_desc_ready;
-
-    /////////////////////////////////////////////////////////
-    // Stream demux chiplet dep check
-    /////////////////////////////////////////////////////////
-    // This demux is to check the chiplet dep matrix
-    // After checking, the dummy task will be poped so the later task can proceed
-    // [0]: Normal, Dummy
-    // [1]: task_type == 2'b10 path (H2H Dep Check)
-    logic       stream_demux_is_chiplet_dep_check_task_inp_valid;
-    logic       stream_demux_is_chiplet_dep_check_task_inp_ready;
-    logic       stream_demux_is_chiplet_dep_check_task_oup_sel;
-    logic [1:0] stream_demux_is_chiplet_dep_check_task_oup_valid;
-    logic [1:0] stream_demux_is_chiplet_dep_check_task_oup_ready;
+    // This module is to send the chiplet dep set signal to other chiplets
+    // It will receive the chiplet dep set task from the wait dep check queues
+    bingo_hw_manager_task_desc_full_t chiplet_dep_set_task_desc;
+    logic                             chiplet_dep_set_task_desc_valid;
+    logic                             chiplet_dep_set_task_desc_ready;
 
     //////////////////////////////////////////////////////////
-    // H2H Done Queue signals
-    //////////////////////////////////////////////////////////
-    logic [HostAxiLiteDataWidth-1:0]   h2h_chiplet_done_queue_mbox_data;
-    logic                              h2h_chiplet_done_queue_mbox_empty;
-    logic                              h2h_chiplet_done_queue_mbox_pop;
-
-    //////////////////////////////////////////////////////////
-    // H2H Dep Check sum signals
-    //////////////////////////////////////////////////////////
-    bingo_hw_manager_chiplet_dep_check_task_desc_full_t h2h_dep_check_task_desc;
-    logic                   dep_check_sum_valid;
-    logic                   dep_check_sum_ready;
-    logic [ChipIdWidth-1:0] dep_check_sum;
-    logic                   dep_set_sum_valid;
-    logic                   dep_set_sum_ready;
+    // Stream Arbiter Chiplet Dep Set Issue Signals
+    //////////////////////////////////////////////////////////    
+    bingo_hw_manager_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0]  stream_arbiter_chiplet_dep_set_inp_task_desc;
+    logic                             [NUM_CORES_PER_CLUSTER-1:0]  stream_arbiter_chiplet_dep_set_inp_valid;
+    logic                             [NUM_CORES_PER_CLUSTER-1:0]  stream_arbiter_chiplet_dep_set_inp_ready;
+    bingo_hw_manager_task_desc_full_t                              stream_arbiter_chiplet_dep_set_oup_task_desc;
+    logic                                                          stream_arbiter_chiplet_dep_set_oup_valid;
+    logic                                                          stream_arbiter_chiplet_dep_set_oup_ready;
 
 
+    //////////////////////////////////////////////////////////
+    // Chiplet Done Queue
+    //////////////////////////////////////////////////////////
+    logic [HostAxiLiteDataWidth-1:0]   chiplet_done_queue_mbox_data;
+    logic                              chiplet_done_queue_mbox_empty;
+    logic                              chiplet_done_queue_mbox_pop;
+    bingo_hw_manager_task_desc_full_t  cur_chiplet_done_queue_task_desc;
     /////////////////////////////////////////////////////////
     // Stream demux core type
     /////////////////////////////////////////////////////////
@@ -312,29 +227,30 @@ module bingo_hw_manager_top #(
     logic                             [NUM_CORES_PER_CLUSTER-1:0] waiting_dep_check_queue_pop;
 
 
-    //////////////////////////////////
-    // is_dummy_set task demux signals
-    //////////////////////////////////
-    // Here we need to demux the is_dummy_set signal to two outputs
-    // Each core type has its own demux
-
-    typedef logic [1:0]                               is_dummy_set_task_demux_oup_t;
-    logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_inp_valid;
-    logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_inp_ready;
-    logic                                [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_sel;
-    is_dummy_set_task_demux_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_valid;
-    is_dummy_set_task_demux_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         is_dummy_set_task_demux_oup_ready;
-
     /////////////////////////////////
-    // dummy_set_cluster_id demux signals
+    // Stream Demux Chiplet Dep Set
+    /////////////////////////////////
+    // After the Wait Dep Check Queues, we need to demux the chiplet dep set tasks
+    // [0]: Normal and dummy
+    // [1]: Chiplet dep set
+    typedef logic [1:0] stream_demux_chiplet_dep_set_oup_t;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]  stream_demux_chiplet_dep_set_inp_valid;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]  stream_demux_chiplet_dep_set_inp_ready;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]  stream_demux_chiplet_dep_set_oup_sel;
+    stream_demux_chiplet_dep_set_oup_t      [NUM_CORES_PER_CLUSTER-1:0]  stream_demux_chiplet_dep_set_oup_valid;
+    stream_demux_chiplet_dep_set_oup_t      [NUM_CORES_PER_CLUSTER-1:0]  stream_demux_chiplet_dep_set_oup_ready;
+
+
     //////////////////////////////////
-    typedef logic [NUM_CLUSTERS_PER_CHIPLET-1:0]         dummy_set_cluster_id_demux_oup_t;
-    typedef logic [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0] dummy_set_cluster_id_demux_oup_sel_t;
-    logic                                 [NUM_CORES_PER_CLUSTER-1:0] dummy_set_task_demux_inp_valid;
-    logic                                 [NUM_CORES_PER_CLUSTER-1:0] dummy_set_task_demux_inp_ready;
-    dummy_set_cluster_id_demux_oup_sel_t  [NUM_CORES_PER_CLUSTER-1:0] dummy_set_task_demux_oup_sel;
-    dummy_set_cluster_id_demux_oup_t      [NUM_CORES_PER_CLUSTER-1:0] dummy_set_task_demux_oup_valid;
-    dummy_set_cluster_id_demux_oup_t      [NUM_CORES_PER_CLUSTER-1:0] dummy_set_task_demux_oup_ready;
+    // Stream Demux Dummy Dep Set
+    //////////////////////////////////
+    // Each core type has its own demux
+    typedef logic [1:0] stream_demux_dummy_dep_set_oup_t;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]         stream_demux_dummy_dep_set_inp_valid;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]         stream_demux_dummy_dep_set_inp_ready;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0]         stream_demux_dummy_dep_set_oup_sel;
+    stream_demux_dummy_dep_set_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         stream_demux_dummy_dep_set_oup_valid;
+    stream_demux_dummy_dep_set_oup_t        [NUM_CORES_PER_CLUSTER-1:0]         stream_demux_dummy_dep_set_oup_ready;
 
     ////////////////////////////////
     // Stream fork signals
@@ -384,6 +300,44 @@ module bingo_hw_manager_top #(
     logic [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]            dep_set_valid;
     dep_set_code_t [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]   dep_set_code;
 
+    ///////////////////////////////////////
+    // Stream Arbiter Dep Matrix Set
+    ///////////////////////////////////////
+    // There are three types input streams to set the dep matrix
+    // Type 1: From Checkout queues (NUM_CORE * NUM_Cluster) for normal tasks
+    // Type 2: From Waiting Dep check queues (NUM_CORES) for dummy set queues
+    // Type 3: From Chiplet Dep Set Recv Queue for chiplet dep set queues
+    // In total we have (NUM_CORE * NUM_Cluster) + (NUM_CORES) + 1 inputs for the dep matrix set
+
+    localparam int unsigned STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER + 1;
+    bingo_hw_manager_dep_matrix_set_meta_t    [STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP-1:0] stream_arbiter_dep_matrix_set_inp_data;
+    logic                                     [STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP-1:0] stream_arbiter_dep_matrix_set_inp_valid;
+    logic                                     [STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP-1:0] stream_arbiter_dep_matrix_set_inp_ready;
+    bingo_hw_manager_dep_matrix_set_meta_t                                                stream_arbiter_dep_matrix_set_oup_data;
+    logic                                                                                 stream_arbiter_dep_matrix_set_oup_valid;
+    logic                                                                                 stream_arbiter_dep_matrix_set_oup_ready;
+
+    ///////////////////////////////////////
+    // Stream Demux Set Dep Matrix Cluster ID
+    ///////////////////////////////////////
+    // Possbile to move the demux before the arbiter to support more parallelism
+    logic                                          stream_demux_set_dep_matrix_cluster_id_inp_valid;
+    logic                                          stream_demux_set_dep_matrix_cluster_id_inp_ready;
+    logic  [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0]  stream_demux_set_dep_matrix_cluster_id_oup_sel;
+    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]          stream_demux_set_dep_matrix_cluster_id_oup_valid;
+    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]          stream_demux_set_dep_matrix_cluster_id_oup_ready;
+    ///////////////////////////////////////
+    // Stream Demux Set Dep Matrix Core ID
+    ///////////////////////////////////////
+    typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0]    stream_demux_set_dep_matrix_core_id_oup_sel_t;
+    typedef logic [NUM_CORES_PER_CLUSTER-1:0]            stream_demux_set_dep_matrix_core_id_oup_t
+    logic                                          [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_inp_valid;
+    logic                                          [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_inp_ready;
+    stream_demux_set_dep_matrix_core_id_oup_sel_t  [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_oup_sel;
+    stream_demux_set_dep_matrix_core_id_oup_t      [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_oup_valid;
+    stream_demux_set_dep_matrix_core_id_oup_t      [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_oup_ready;
+
+
     //////////////////////
     // Ready queue signals
     //////////////////////
@@ -413,10 +367,7 @@ module bingo_hw_manager_top #(
     // Checkout queue signals
     //////////////////////
 
-    typedef struct packed{
-        bingo_hw_manager_task_id_t           task_id;
-        bingo_hw_manager_dep_set_info_t      dep_set_info;
-    } bingo_hw_manager_checkout_task_desc_t;
+
 
     bingo_hw_manager_checkout_task_desc_t   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_queue_data_out;
     bingo_hw_manager_checkout_task_desc_t   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_queue_data_in;
@@ -433,12 +384,6 @@ module bingo_hw_manager_top #(
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_filter_oup_ready;
 
 
-    /////////////////////////
-    // Dep Set Mux signals
-    /////////////////////////
-    bingo_hw_manager_dep_code_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_data;
-    logic                       [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_valid;
-    logic                       [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] dep_set_code_mux_oup_ready;
     // Done Queue signals
     bingo_hw_manager_done_info_full_t    cur_done_queue_info;
     logic [DeviceAxiLiteDataWidth-1:0]   done_queue_mbox_data;
@@ -488,29 +433,9 @@ module bingo_hw_manager_top #(
         .mbox_empty_o(task_queue_mbox_empty     ),
         .mbox_flush_i('0                        )
     );
-    always_comb begin : compose_task_queue_signals
-        cur_task_desc = bingo_hw_manager_task_desc_full_t'(task_queue_mbox_data);
-        task_queue_mbox_pop = stream_demux_is_chiplet_dep_set_task_inp_ready && !task_queue_mbox_empty;
-    end
+    assign task_queue_mbox_pop = stream_demux_core_type_inp_ready && !task_queue_mbox_empty;
+    assign cur_task_desc = bingo_hw_manager_task_desc_full_t'(task_queue_mbox_data);
 
-    /////////////////////////////////////////////////////////
-    // Stream demux is chiplet set task
-    /////////////////////////////////////////////////////////    
-    stream_demux #(
-        .N_OUP ( 2           )
-    ) i_stream_demux_is_chiplet_dep_set_task (
-        .inp_valid_i ( stream_demux_is_chiplet_dep_set_task_inp_valid ),
-        .inp_ready_o ( stream_demux_is_chiplet_dep_set_task_inp_ready ),
-        .oup_sel_i   ( stream_demux_is_chiplet_dep_set_task_oup_sel   ),
-        .oup_valid_o ( stream_demux_is_chiplet_dep_set_task_oup_valid ),
-        .oup_ready_i ( stream_demux_is_chiplet_dep_set_task_oup_ready )
-    );
-    always_comb begin: compose_stream_chiplet_dep_set_task_signals
-        stream_demux_is_chiplet_dep_set_task_inp_valid = !task_queue_mbox_empty;
-        stream_demux_is_chiplet_dep_set_task_oup_sel = (cur_task_desc.task_type == 2'b11);
-        stream_demux_is_chiplet_dep_set_task_oup_ready[0] = stream_demux_is_chiplet_dep_check_task_inp_ready;
-        stream_demux_is_chiplet_dep_set_task_oup_ready[1] = h2h_dep_set_task_desc_ready;
-    end
 
     /////////////////////////////////////////////////////////
     // H2H Dep Set Interface
@@ -519,26 +444,48 @@ module bingo_hw_manager_top #(
         .ChipIdWidth                                  (ChipIdWidth            ),
         .HostAxiLiteAddrWidth                         (HostAxiLiteAddrWidth   ),
         .HostAxiLiteDataWidth                         (HostAxiLiteDataWidth   ),
-        .h2h_axi_lite_out_req_t                       (h2h_axi_lite_out_req_t ),
-        .h2h_axi_lite_out_resp_t                      (h2h_axi_lite_out_resp_t),
-        .bingo_hw_manager_chiplet_dep_set_task_desc_full_t(bingo_hw_manager_chiplet_dep_set_task_desc_full_t)
-    ) i_bingo_hw_manager_h2h_dep_set (
-        .clk_i                         (clk_i                          ),
-        .rst_ni                        (rst_ni                         ),
-        .h2h_mailbox_base_addr_i       (h2h_mailbox_base_addr_i        ),
-        .h2h_to_remote_axi_lite_req_o  (h2h_to_remote_axi_lite_req_o   ),
-        .h2h_to_remote_axi_lite_resp_i (h2h_to_remote_axi_lite_resp_i  ),
-        .h2h_dep_set_task_desc_i       (h2h_dep_set_task_desc          ),
-        .h2h_dep_set_task_desc_valid_i (h2h_dep_set_task_desc_valid    ),
-        .h2h_dep_set_task_desc_ready_o (h2h_dep_set_task_desc_ready    )
+        .host_axi_lite_req_t                          (h2h_axi_lite_req_t     ),
+        .host_axi_lite_resp_t                         (h2h_axi_lite_resp_t    ),
+        .bingo_hw_manager_task_desc_full_t            (bingo_hw_manager_task_desc_full_t)
+    ) i_bingo_hw_manager_chiplet_dep_set (
+        .clk_i                             (clk_i                              ),
+        .rst_ni                            (rst_ni                             ),
+        .chiplet_mailbox_base_addr_i       (chiplet_mailbox_base_addr_i        ),
+        .to_remote_chiplet_axi_lite_req_o  (to_remote_chiplet_axi_lite_req_o   ),
+        .to_remote_chiplet_axi_lite_resp_i (to_remote_chiplet_axi_lite_resp_i  ),
+        .chiplet_dep_set_task_desc_i       (chiplet_dep_set_task_desc          ),
+        .chiplet_dep_set_task_desc_valid_i (chiplet_dep_set_task_desc_valid    ),
+        .chiplet_dep_set_task_desc_ready_o (chiplet_dep_set_task_desc_ready    )
     );
-    always_comb begin : compose_h2h_dep_set_signals
-        h2h_dep_set_task_desc = bingo_hw_manager_chiplet_dep_set_task_desc_full_t'(task_queue_mbox_data);
-        h2h_dep_set_task_desc_valid = stream_demux_is_chiplet_dep_set_task_oup_valid[1];
+    assign chiplet_dep_set_task_desc = stream_arbiter_chiplet_dep_set_oup_task_desc;
+    assign chiplet_dep_set_task_desc_valid = stream_arbiter_chiplet_dep_set_oup_valid;
+
+    /////////////////////////////////////////////////////////
+    // Stream Arbiter for Chiplet Dep Set
+    /////////////////////////////////////////////////////////     
+    stream_arbiter #(
+        .DATA_T (bingo_hw_manager_task_desc_full_t  ),
+        .N_INP  (NUM_CORES_PER_CLUSTER              )
+    ) i_stream_arbiter_chiplet_dep_set (
+        .inp_data_i ( stream_arbiter_chiplet_dep_set_inp_task_desc ),
+        .inp_valid_i( stream_arbiter_chiplet_dep_set_inp_valid     ),
+        .inp_ready_o( stream_arbiter_chiplet_dep_set_inp_ready     ),
+        .oup_data_o ( stream_arbiter_chiplet_dep_set_oup_task_desc ),
+        .oup_valid_o( stream_arbiter_chiplet_dep_set_oup_valid     ),
+        .oup_ready_i( stream_arbiter_chiplet_dep_set_oup_ready     )
+    );
+    assign stream_arbiter_chiplet_dep_set_oup_ready = chiplet_dep_set_task_desc_ready;
+    always_comb begin : compose_stream_arbiter_chiplet_dep_set_signals
+        for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+            stream_arbiter_chiplet_dep_set_inp_data[core] = waiting_dep_check_task_desc[core];
+            stream_arbiter_chiplet_dep_set_inp_valid[core] = stream_demux_chiplet_dep_set_oup_valid[core][1];
+            stream_demux_chiplet_dep_set_oup_ready[core][1] = stream_arbiter_chiplet_dep_set_inp_ready[core];
+        end
     end
 
+
     //////////////////////////////////////////////////////////////////////
-    // H2H Chiplet from remote Done Queue
+    // Chiplet from remote Done Queue
     //////////////////////////////////////////////////////////////////////
     bingo_hw_manager_write_mailbox #(
         .MailboxDepth(H2HDoneQueueDepth                        ),
@@ -547,66 +494,23 @@ module bingo_hw_manager_top #(
         .AxiAddrWidth(HostAxiLiteAddrWidth                     ),
         .AxiDataWidth(HostAxiLiteDataWidth                     ),
         .ChipIdWidth (ChipIdWidth                              ),
-        .req_lite_t  (h2h_axi_lite_in_req_t                    ),
-        .resp_lite_t (h2h_axi_lite_in_resp_t                   )
+        .req_lite_t  (host_axi_lite_req_t                       ),
+        .resp_lite_t (host_axi_lite_resp_t                      )
     ) i_bingo_hw_manager_chiplet_done_queue (
         .clk_i       (clk_i                     ),
         .rst_ni      (rst_ni                    ),
         .chip_id_i   (chip_id_i                 ),
         .test_i      (1'b0                      ),
-        .req_i       (h2h_from_remote_axi_lite_req_i        ),
-        .resp_o      (h2h_from_remote_axi_lite_resp_o       ),
-        .irq_o       (/*not used*/                          ),
-        .base_addr_i (h2h_mailbox_base_addr_i               ),
-        .mbox_data_o (h2h_chiplet_done_queue_mbox_data      ),
-        .mbox_pop_i  (h2h_chiplet_done_queue_mbox_pop       ),
-        .mbox_empty_o(h2h_chiplet_done_queue_mbox_empty     ),
-        .mbox_flush_i('0                                    )
+        .req_i       (from_remote_axi_lite_req_i        ),
+        .resp_o      (from_remote_axi_lite_resp_o       ),
+        .irq_o       (/*not used*/                      ),
+        .base_addr_i (chiplet_mailbox_base_addr_i       ),
+        .mbox_data_o (chiplet_done_queue_mbox_data      ),
+        .mbox_pop_i  (chiplet_done_queue_mbox_pop       ),
+        .mbox_empty_o(chiplet_done_queue_mbox_empty     ),
+        .mbox_flush_i('0                                )
     );
-    always_comb begin : compose_h2h_chiplet_done_queue_signal
-        h2h_chiplet_done_queue_mbox_pop = dep_set_sum_ready && !h2h_chiplet_done_queue_mbox_empty;
-    end
-
-    /////////////////////////////////////////////////////////
-    // Stream demux is chiplet check task
-    /////////////////////////////////////////////////////////    
-    stream_demux #(
-        .N_OUP ( 2           )
-    ) i_stream_demux_is_chiplet_dep_check_task (
-        .inp_valid_i ( stream_demux_is_chiplet_dep_check_task_inp_valid ),
-        .inp_ready_o ( stream_demux_is_chiplet_dep_check_task_inp_ready ),
-        .oup_sel_i   ( stream_demux_is_chiplet_dep_check_task_oup_sel   ),
-        .oup_valid_o ( stream_demux_is_chiplet_dep_check_task_oup_valid ),
-        .oup_ready_i ( stream_demux_is_chiplet_dep_check_task_oup_ready )
-    );
-    always_comb begin: compose_stream_chiplet_check_task_signals
-        stream_demux_is_chiplet_dep_check_task_inp_valid = stream_demux_is_chiplet_dep_set_task_oup_valid[0];
-        stream_demux_is_chiplet_dep_check_task_oup_sel = (cur_task_desc.task_type == 2'b10);
-        stream_demux_is_chiplet_dep_check_task_oup_ready[0] = stream_demux_core_type_inp_ready;
-        stream_demux_is_chiplet_dep_check_task_oup_ready[1] = dep_check_sum_ready;
-    end
-
-    /////////////////////////////////////////////////////////
-    // H2H Dep Check Sum
-    ///////////////////////////////////////////////////////// 
-    bingo_hw_manager_dep_check_sum #(
-        .CHECKSUM_WIDTH(ChipIdWidth)
-    ) i_bingo_hw_manager_h2h_dep_check_sum(
-        .clk_i                   (clk_i                  ),
-        .rst_ni                  (rst_ni                 ),
-        .dep_check_sum_valid_i   (dep_check_sum_valid    ),
-        .dep_check_sum_ready_o   (dep_check_sum_ready    ),
-        .dep_check_sum_i         (dep_check_sum          ),
-        .dep_set_sum_valid_i     (dep_set_sum_valid      ),
-        .dep_set_sum_ready_o     (dep_set_sum_ready      )
-    );
-    always_comb begin : compose_h2h_dep_check_sum_signals
-        dep_check_sum_valid = stream_demux_is_chiplet_dep_check_task_oup_valid[1];
-        dep_set_sum_valid = !h2h_chiplet_done_queue_mbox_empty;
-        h2h_dep_check_task_desc = bingo_hw_manager_chiplet_dep_check_task_desc_full_t'(task_queue_mbox_data);
-        dep_check_sum = h2h_dep_check_task_desc.dep_check_sum;
-    end
-
+    assign cur_chiplet_done_queue_task_desc = bingo_hw_manager_task_desc_full_t'(chiplet_done_queue_mbox_data);
 
     //////////////////////////////////////////////////////////////////////
     // Stream demux core type
@@ -621,7 +525,7 @@ module bingo_hw_manager_top #(
         .oup_ready_i ( stream_demux_core_type_oup_ready )
     );
     always_comb begin: compose_stream_demux_core_type_signals
-        stream_demux_core_type_inp_valid = stream_demux_is_chiplet_dep_check_task_oup_valid[0];
+        stream_demux_core_type_inp_valid = !task_queue_mbox_empty;
         stream_demux_core_type_oup_sel = cur_task_desc.assigned_core_id;
         for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
             stream_demux_core_type_oup_ready[core] = ~waiting_dep_check_queue_full[core];
@@ -647,43 +551,40 @@ module bingo_hw_manager_top #(
             .data_o      ( waiting_dep_check_task_desc[core]   ),
             .pop_i       ( waiting_dep_check_queue_pop[core]   )
         );
-        always_comb begin: compose_waiting_dep_check_queue_signals
-            waiting_dep_check_queue_push[core] = stream_demux_core_type_oup_valid[core] && ~waiting_dep_check_queue_full[core];
-            waiting_dep_check_queue_pop[core] = is_dummy_set_task_demux_inp_ready[core] && ~waiting_dep_check_queue_empty[core];
-        end
+            assign waiting_dep_check_queue_push[core] = stream_demux_core_type_oup_valid[core] && ~waiting_dep_check_queue_full[core];
+            assign waiting_dep_check_queue_pop[core] = stream_demux_dummy_dep_set_inp_ready[core] && ~waiting_dep_check_queue_empty[core];
+        // We need to demux the task to chiplet dep set
+        // [0]: Normal and dummy
+        // [1]: Chiplet dep set
+        stream_demux #(
+            .N_OUP ( 2           )
+        ) i_stream_demux_chiplet_dep_set (
+            .inp_valid_i ( stream_demux_chiplet_dep_set_inp_valid   ),
+            .inp_ready_o ( stream_demux_chiplet_dep_set_inp_ready   ),
+            .oup_sel_i   ( stream_demux_chiplet_dep_set_oup_sel     ),
+            .oup_valid_o ( stream_demux_chiplet_dep_set_oup_valid   ),
+            .oup_ready_i ( stream_demux_chiplet_dep_set_oup_ready   )
+        );
+        assign stream_demux_chiplet_dep_set_inp_valid = !waiting_dep_check_queue_empty[core];
+        assign stream_demux_chiplet_dep_set_oup_sel = (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en) && (waiting_dep_check_task_desc.dep_set_info.dep_set_chiplet_id != chip_id_i);
+
         // After the waiting dep check queue, we need a demux to create a fast set path for the dummy set tasks
         // [0]: Normal path
         // [1]: Dummy Set path: is_dummy==1 && dep_set_en==1
         stream_demux #(
             .N_OUP ( 2           )
-        ) i_stream_demux_is_dummy_set (
-            .inp_valid_i ( is_dummy_set_task_demux_inp_valid[core] ),
-            .inp_ready_o ( is_dummy_set_task_demux_inp_ready[core] ),
-            .oup_sel_i   ( is_dummy_set_task_demux_oup_sel[core]   ),
-            .oup_valid_o ( is_dummy_set_task_demux_oup_valid[core] ),
-            .oup_ready_i ( is_dummy_set_task_demux_oup_ready[core] )
+        ) i_stream_demux_dummy_dep_set (
+            .inp_valid_i ( stream_demux_dummy_dep_set_inp_valid[core] ),
+            .inp_ready_o ( stream_demux_dummy_dep_set_inp_ready[core] ),
+            .oup_sel_i   ( stream_demux_dummy_dep_set_oup_sel[core]   ),
+            .oup_valid_o ( stream_demux_dummy_dep_set_oup_valid[core] ),
+            .oup_ready_i ( stream_demux_dummy_dep_set_oup_ready[core] )
         );
         always_comb begin: compose_is_dummy_set_task_demux_signals
-            is_dummy_set_task_demux_inp_valid[core] = !waiting_dep_check_queue_empty[core];
-            is_dummy_set_task_demux_oup_sel[core] = (waiting_dep_check_task_desc[core].task_type == 2'b10) && (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en);
-            is_dummy_set_task_demux_oup_ready[core][0] = stream_fork_inp_ready[core];
-            is_dummy_set_task_demux_oup_ready[core][1] = dummy_set_task_demux_inp_ready[core];
-        end
-
-
-        // Then we need another stream demux to route to the dummy set task to the correct cluster based on cluster id
-        stream_demux #(
-            .N_OUP ( NUM_CLUSTERS_PER_CHIPLET           )
-        ) i_stream_demux_dummy_set_cluster_id (
-            .inp_valid_i ( dummy_set_task_demux_inp_valid[core]   ),
-            .inp_ready_o ( dummy_set_task_demux_inp_ready[core]   ),
-            .oup_sel_i   ( dummy_set_task_demux_oup_sel[core]     ),
-            .oup_valid_o ( dummy_set_task_demux_oup_valid[core]   ),
-            .oup_ready_i ( dummy_set_task_demux_oup_ready[core]   )
-        );
-        always_comb begin: compose_dummy_set_cluster_id_demux_signals
-            dummy_set_task_demux_inp_valid[core] = is_dummy_set_task_demux_oup_valid[core][1];
-            dummy_set_task_demux_oup_sel[core] = waiting_dep_check_task_desc[core].assigned_cluster_id;
+            stream_demux_dummy_dep_set_inp_valid[core] = !waiting_dep_check_queue_empty[core];
+            stream_demux_dummy_dep_set_oup_sel[core] = (waiting_dep_check_task_desc[core].task_type == 2'b10) && (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en);
+            stream_demux_dummy_dep_set_oup_ready[core][0] = stream_fork_inp_ready[core];
+            stream_demux_dummy_dep_set_oup_ready[core][1] = stream_arbiter_dep_matrix_set_inp_ready[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET+core];
         end
 
         // There are three outputs from the stream fork:
@@ -701,7 +602,7 @@ module bingo_hw_manager_top #(
             .ready_i    ( stream_fork_oup_ready[core]  )
         );
         always_comb begin: compose_stream_fork_dep_check_queue_signals
-            stream_fork_inp_valid[core] = is_dummy_set_task_demux_oup_valid[core][0];
+            stream_fork_inp_valid[core] = stream_demux_dummy_dep_set_oup_valid[core][0];
         end
 
         // For the dep matrix, if the dep check is disable, we do not need to send the task to dep matrix
@@ -782,10 +683,9 @@ module bingo_hw_manager_top #(
             .dep_set_valid_i   (dep_set_valid[cluster]   ),
             .dep_set_code_i    (dep_set_code[cluster]    )
         );
-
     end
 
-    always_comb begin : connect_waiting_dep_check_queue_demux_to_dep_matrix
+    always_comb begin : connect_dep_check_for_dep_matrix
         for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
             for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
                 dep_check_valid[cluster][core] = demux_dep_matrix_oup_valid[core][cluster];
@@ -795,16 +695,99 @@ module bingo_hw_manager_top #(
         end
     end
 
-    always_comb begin : connect_dep_set_mux_to_dep_matrix
-        for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-            for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                dep_set_valid[cluster][core] = dep_set_code_mux_oup_valid[core][cluster];
-                dep_set_code[cluster][core] =  dep_set_code_mux_oup_data[core][cluster];
-                dep_set_code_mux_oup_ready[core][cluster] = dep_set_valid[cluster][core];
+    //////////////////////////////////////////////////////////////////////
+    // Stream Arbiter Dep Matrix Set
+    //////////////////////////////////////////////////////////////////////
+    // There are three types of the Dep matrix set
+    // [0 to NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET-1]: Normal Path: From Checkout Queue
+    // [NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET to NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER - 1]: Dummy Dep Set: From Wait Dep Check Queues
+    // [NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER-1] : Chiplet Set
+    stream_arbiter #(
+        .DATA_T(bingo_hw_manager_dep_matrix_set_meta_t),
+        .N_INP (STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP)
+    ) i_stream_arbiter_dep_matrix_set(
+        .clk        (clk_i),
+        .rst_ni     (rst_ni),
+        .inp_data_i (stream_arbiter_dep_matrix_set_inp_data ),
+        .inp_valid_i(stream_arbiter_dep_matrix_set_inp_valid),
+        .inp_ready_o(stream_arbiter_dep_matrix_set_inp_ready),
+        .oup_data_o (stream_arbiter_dep_matrix_set_oup_data ),
+        .oup_valid_o(stream_arbiter_dep_matrix_set_oup_valid),
+        .oup_ready_i(stream_arbiter_dep_matrix_set_oup_ready)
+    );
+    always_comb begin : compose_stream_arbiter_dep_matrix_set_inputs
+        // For Checkout Queue
+        for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+            for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+                    int idx = core + cluster * NUM_CORES_PER_CLUSTER;
+                    stream_arbiter_dep_matrix_set_inp_data[idx].dep_matrix_id = checkout_queue_data_out[core][cluster].dep_set_info.assigned_cluster_id;
+                    stream_arbiter_dep_matrix_set_inp_data[idx].dep_matrix_col= core;
+                    stream_arbiter_dep_matrix_set_inp_data[idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
+                    // Handshake from the check out filter
+                    stream_arbiter_dep_matrix_set_inp_valid[idx] = checkout_filter_oup_valid[core][cluster];
+
             end
         end
+        // For Wait Dep Set Queue
+        for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin    
+            int idx = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + core;
+            stream_arbiter_dep_matrix_set_inp_data[idx].dep_matrix_id = waiting_dep_check_task_desc[core].dep_set_info.assigned_cluster_id;
+            stream_arbiter_dep_matrix_set_inp_data[idx].dep_matrix_col= core;
+            stream_arbiter_dep_matrix_set_inp_data[idx].dep_set_code  = waiting_dep_check_task_desc[core].dep_set_info.dep_set_code;
+            // Handshake from the Dummy Set Demux
+            stream_arbiter_dep_matrix_set_inp_valid[idx] = stream_demux_dummy_dep_set_oup_valid[core];
+        end
+        // For Chiplet Set Queue
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER].dep_matrix_id  = cur_chiplet_done_queue_task_desc.dep_set_info.assigned_cluster_id;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER].dep_matrix_col = cur_chiplet_done_queue_task_desc.assigned_core_id;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + NUM_CORES_PER_CLUSTER].dep_set_code   = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_code;
+        stream_arbiter_dep_matrix_set_inp_valid[idx]
+
+        stream_arbiter_dep_matrix_set_oup_ready = stream_demux_set_dep_matrix_cluster_id_inp_ready;
+    end 
+    //////////////////////////////////////////////////////////////////////
+    // Stream Demux Set Dep Matrix Cluster ID
+    //////////////////////////////////////////////////////////////////////
+    stream_demux #(
+        .N_OUP(NUM_CLUSTERS_PER_CHIPLET)
+    ) i_stream_demux_set_dep_matrix_cluster_id (
+        .inp_valid_i(stream_demux_set_dep_matrix_cluster_id_inp_valid),
+        .inp_ready_o(stream_demux_set_dep_matrix_cluster_id_inp_ready),
+        .oup_sel_i  (stream_demux_set_dep_matrix_cluster_id_oup_sel),
+        .oup_valid_o(stream_demux_set_dep_matrix_cluster_id_oup_valid),
+        .oup_ready_i(stream_demux_set_dep_matrix_cluster_id_oup_ready)
+    );
+    assign stream_demux_set_dep_matrix_cluster_id_inp_valid = stream_arbiter_dep_matrix_set_oup_valid;
+    assign stream_demux_set_dep_matrix_cluster_id_oup_sel = stream_arbiter_dep_matrix_set_oup_data.dep_matrix_id;
+
+    //////////////////////////////////////////////////////////////////////
+    // Stream Demux Set Dep Matrix Core ID
+    //////////////////////////////////////////////////////////////////////
+    for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_set_dep_matrix_core_id
+        stream_demux #(
+            .N_OUP(NUM_CLUSTERS_PER_CHIPLET)
+        ) i_stream_demux_set_dep_matrix_core_id (
+            .inp_valid_i(stream_demux_set_dep_matrix_core_id_inp_valid[cluster]),
+            .inp_ready_o(stream_demux_set_dep_matrix_core_id_inp_ready[cluster]),
+            .oup_sel_i  (stream_demux_set_dep_matrix_core_id_oup_sel[cluster]  ),
+            .oup_valid_o(stream_demux_set_dep_matrix_core_id_oup_valid[cluster]),
+            .oup_ready_i(stream_demux_set_dep_matrix_core_id_oup_ready[cluster])
+        );
+        assign stream_demux_set_dep_matrix_cluster_id_oup_ready[cluster] = stream_demux_set_dep_matrix_core_id_inp_ready[cluster];
+        assign stream_demux_set_dep_matrix_core_id_inp_valid[cluster] = stream_demux_set_dep_matrix_cluster_id_oup_valid[cluster];
+        assign stream_demux_set_dep_matrix_core_id_oup_sel[cluster] = stream_arbiter_dep_matrix_set_oup_data.assigned_core_id;
+        // The Dep Matrix Set does not have ready signal
+        assign stream_demux_set_dep_matrix_core_id_oup_ready[cluster] = stream_demux_set_dep_matrix_core_id_oup_valid[cluster]; 
     end
 
+    always_comb begin : connect_dep_set_for_dep_matrix
+        for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+            for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+                dep_set_valid[cluster][core] = stream_demux_set_dep_matrix_core_id_oup_valid[cluster][core];
+                dep_set_code[cluster][core] = stream_arbiter_dep_matrix_set_oup_data.dep_set_code & stream_demux_set_dep_matrix_core_id_oup_valid[cluster][core];
+            end
+        end        
+    end
 
     //////////////////////////////////////////////////////////////////////
     // Ready Queue
@@ -850,6 +833,8 @@ module bingo_hw_manager_top #(
             end
         end
     end
+
+
 
     //////////////////////////////////////////////////////////////////////
     // Checkout Queue
@@ -897,6 +882,7 @@ module bingo_hw_manager_top #(
             for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
                 checkout_filter_inp_valid[core][cluster] = ~checkout_queue_empty[core][cluster] && stream_demux_from_done_queue_to_checkout_queue_clusterid_oup_valid[core][cluster] &&
                 checkout_queue_data_out[core][cluster].task_id == cur_done_queue_info.task_id;
+                checkout_filter_oup_ready[core][cluster] = stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
             end
         end
     end
@@ -909,29 +895,6 @@ module bingo_hw_manager_top #(
                 checkout_queue_push[core][cluster] = demux_checkout_queue_oup_valid[core][cluster] & ~checkout_queue_full[core][cluster];
                 demux_checkout_queue_oup_ready[core][cluster] = ~checkout_queue_full[core][cluster];
             end
-        end
-    end
-
-    /////////////////////////////////////////////////////////
-    // Dep Set Mux
-    /////////////////////////////////////////////////////////
-    for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_dep_set_mux
-        for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-            // There are two sources for dep set info:
-            // [0]: From checkout queue
-            // [1]: From fast dummy set path
-            stream_mux #(
-                .DATA_T ( bingo_hw_manager_dep_code_t ),
-                .N_INP ( 2 )
-            ) i_dep_set_code_mux (
-                .inp_data_i  ({waiting_dep_check_task_desc[core].dep_set_info.dep_set_code, checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code} ),
-                .inp_valid_i ({dummy_set_task_demux_oup_valid[core][cluster], checkout_filter_oup_valid[core][cluster]}      ),
-                .inp_ready_o ({dummy_set_task_demux_oup_ready[core][cluster], checkout_filter_oup_ready[core][cluster]}      ),
-                .inp_sel_i   (dummy_set_task_demux_oup_valid[core][cluster]                                                  ),
-                .oup_data_o  (dep_set_code_mux_oup_data[core][cluster]                                                       ),
-                .oup_valid_o (dep_set_code_mux_oup_valid[core][cluster]                                                      ),
-                .oup_ready_i (dep_set_code_mux_oup_ready[core][cluster]                                                      )
-            );
         end
     end
 
@@ -964,9 +927,7 @@ module bingo_hw_manager_top #(
         .mbox_empty_o(done_queue_mbox_empty     ),
         .mbox_flush_i(1'b0)
     );
-    always_comb begin : compose_done_queue_info
-        cur_done_queue_info = bingo_hw_manager_done_info_full_t'(done_queue_mbox_data);
-    end
+    assign cur_done_queue_info = bingo_hw_manager_done_info_full_t'(done_queue_mbox_data);
     ////////////////////////////////////////////////
     // Done queue demux
     ///////////////////////////////////////////////

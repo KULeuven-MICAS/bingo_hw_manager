@@ -61,15 +61,17 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             succs_list = [
                 succ for succ in self.successors(cur_node)
             ]
-            # If there are more then 1 successors, we need to insert #succ-1 dummy set nodes between the cur_node and 
-            if len(succs_list) >=2:
-                # We have the special situation that this node is a broadcast node to set all chiplets
-
-                remote_succ_list = [
-                    succ for succ in succs_list
-                    if succ.assigned_chiplet_id != cur_node.assigned_chiplet_id
-                ]
-                # All the chiplets id except the current chiplet id happens only once
+            # For all the remote successors, we insert a dummy set node
+            remote_succ_list = [
+                succ for succ in succs_list
+                if succ.assigned_chiplet_id != cur_node.assigned_chiplet_id
+            ]
+            local_succ_list = [
+                succ for succ in succs_list
+                if succ.assigned_chiplet_id == cur_node.assigned_chiplet_id
+            ]
+            if remote_succ_list:
+                # We have a special situation that this node is a broadcast node to set all chiplets
                 if len(set(remote_succ.assigned_chiplet_id for remote_succ in remote_succ_list)) == (MAX_NUM_CHIPLETS -1):
                     # All the remote successors must have the same core id
                     if len(set(remote_succ.assigned_core_id for remote_succ in remote_succ_list)) == 1:
@@ -91,7 +93,28 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         # Add the dummy set node to the graph
                         for remote_succ in remote_succ_list:
                             self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
-                # Now the normal case
+                else:
+                    # Now the normal case
+                    for remote_succ in remote_succ_list:
+                        print(f"Adding dummy set node for {cur_node.node_name} to remote successor {remote_succ.node_name}")
+                        dummy_set_node = BingoNode(
+                            assigned_chiplet_id=cur_node.assigned_chiplet_id,
+                            assigned_cluster_id=remote_succ.assigned_cluster_id, # should be fine since it will not be executed
+                            assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
+                            node_name=f"dummy_set_{cur_node.node_name}_to_{remote_succ.node_name}"
+                        )
+                        dummy_set_node.node_type = "dummy"
+                        dummy_set_node.dep_set_enable = True
+                        dummy_set_node.dep_set_list = [remote_succ.assigned_core_id]
+                        dummy_set_node.dep_set_cluster_id = remote_succ.assigned_cluster_id
+                        dummy_set_node.dep_set_chiplet_id = remote_succ.assigned_chiplet_id
+                        dummy_set_node.dep_check_enable = False
+                        dummy_set_node.dep_check_list = []
+                        dummy_set_node.remote_dep_set_all = False
+                        # Add the dummy set node to the graph
+                        self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
+            if len(local_succ_list)>1:
+                # Now the local multiple successor case
                 # We need local_successors-1 dummy set nodes
                 print(f"Adding dummy set nodes for {cur_node.node_name} with local successors {[succ.node_name for succ in succs_list]}")
                 for i in range(len(succs_list)-1):
@@ -158,27 +181,25 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         for cur_node in self.node_list:
             # Check if the node's task_type is "normal"
             if cur_node.node_type == "normal":
-                # Find local predecessors (same chiplet ID) 
+                # Find predecessors
                 # And not dummy check
-                # And not chiplet dep check
-                local_predecessors = [
+                preds = [
                     pred for pred in self.predecessors(cur_node)
-                    if pred.assigned_chiplet_id == cur_node.assigned_chiplet_id and not (pred.node_type == "dummy" and pred.dep_check_enable) and not (pred.node_type == "chiplet_dep_check")
+                    if not (pred.node_type == "dummy" and pred.dep_check_enable)
                 ]
-
                 # If there are local predecessors, assign dep_check info
-                if local_predecessors:
+                if preds:
                     cur_node.dep_check_enable = True
-                    cur_node.local_dep_check_list = [pred.assigned_core_id for pred in local_predecessors]
+                    cur_node.dep_check_list = [pred.assigned_core_id for pred in preds]
                     # Sanity check if there are multiple same core_id
-                    if len(cur_node.local_dep_check_list) != len(set(cur_node.local_dep_check_list)):
+                    if len(cur_node.dep_check_list) != len(set(cur_node.dep_check_list)):
                         print(f"Warning: Multiple local predecessors with the same core_id for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
                     print(f"Assigned dep_check_info for node {cur_node.node_name}: "
-                          f"dep_check_enable=True, dep_check_list={cur_node.local_dep_check_list}")
+                          f"dep_check_enable=True, dep_check_list={cur_node.dep_check_list}")
                 else:
                     # If no local predecessors, disable dep_check
                     cur_node.dep_check_enable = False
-                    cur_node.local_dep_check_list = []
+                    cur_node.dep_check_list = []
                     print(f"No local predecessors for node {cur_node.node_name}. "
                           f"dep_check_enable=False")
 
@@ -188,24 +209,26 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         for cur_node in self.node_list:
            # Check if the node's task_type is "normal"
            if cur_node.node_type == "normal":
-                # Find local succs (same chiplet ID) 
+                # Find succs
                 # And not dummy set
-                # And not chiplet dep set
-                local_successors = [
+                succs = [
                     succ for succ in self.successors(cur_node)
-                    if succ.assigned_chiplet_id == cur_node.assigned_chiplet_id and not (succ.node_type == "dummy" and succ.dep_set_enable) and not (succ.node_type == "chiplet_dep_set")
+                    if not (succ.node_type == "dummy" and succ.dep_set_enable)
                 ]
-                if len(local_successors)>1:
+                if len(succs)>1:
                     print(f"Warning: More than one local successor for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
-                elif len(local_successors)==1:
+                elif len(succs)==1:
                     cur_node.dep_set_enable = True
-                    cur_node.local_dep_set_list = [succ.assigned_core_id for succ in local_successors]
-                    cur_node.local_dep_set_cluster_id = local_successors[0].assigned_cluster_id
+                    cur_node.dep_set_list = [succ.assigned_core_id for succ in succs]
+                    cur_node.remote_dep_set_all = False
+                    cur_node.dep_set_chiplet_id = succs[0].assigned_chiplet_id
+                    cur_node.dep_set_cluster_id = succs[0].assigned_cluster_id
                 else:
                     cur_node.dep_set_enable = False
-                    cur_node.local_dep_set_list = []
-                    cur_node.local_dep_set_cluster_id = 0
-
+                    cur_node.dep_set_list = []
+                    cur_node.remote_dep_set_all = False
+                    cur_node.dep_set_cluster_id = 0
+                    cur_node.dep_set_chiplet_id = 0
     def bingo_visualize_dfg(self, filename: str = "dfg_visualization.png", figsize: tuple = (10, 8)) -> None:
         """Visualize the DFG with different shapes for task types and colors for chiplets."""
         import matplotlib.pyplot as plt
@@ -216,8 +239,6 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             "normal": "o",  # Circle
             "dummy_set": "s",   # Square
             "dummy_check": "v",  # Downward Triangle
-            "chiplet_dep_set": "D",  # Diamond
-            "chiplet_dep_check": "^"  # Triangle
         }
 
         # Define a color map for chiplets
@@ -281,7 +302,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     cur_task_type = "dummy_set"
                 elif node.dep_check_enable:
                     cur_task_type = "dummy_check"
-            labels[node] = f"Cluster{cur_cluster_id}Core{cur_core_id}\n{cur_task_type}\nChiplet: {cur_chiplet_id}"
+            labels[node] = f"Cluster{cur_cluster_id}Core{cur_core_id}\n{cur_task_type}\nChiplet: {cur_chiplet_id}\nID: {node.node_id}"
         nx.draw_networkx_labels(self, pos, labels=labels, font_size=8)
 
         # Create a legend for task types
@@ -310,11 +331,13 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
     def bingo_emit_push_task_sv(self) -> str:
         """Emit the SystemVerilog string to push tasks for all nodes in the DFG."""
         sv_strings = []
-
         # Iterate over each chiplet
         for chiplet_id in range(MAX_NUM_CHIPLETS):
             # Check if there are any nodes for this chiplet_id
-            chiplet_nodes = [node for node in self.node_list if node.assigned_chiplet_id == chiplet_id]
+            chiplet_nodes = [
+                node for node in nx.topological_sort(self)
+                if node.assigned_chiplet_id == chiplet_id
+            ]
             if not chiplet_nodes:
                 continue  # Skip this chiplet if no nodes exist
 
@@ -325,29 +348,10 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             chiplet_sv.append(f"    wait (rst_ni);")
             chiplet_sv.append(f"    @(posedge clk_i);")
             chiplet_sv.append("")
-
-            # Perform a topological sort of the graph to ensure dependency order
-            topo_sorted_nodes = list(nx.topological_sort(self))
-
-            # Filter nodes for the current chiplet and sort them by priority
-            def node_priority(node):
-                # Assign priorities based on node type
-                if node.node_type == "chiplet_dep_set":
-                    return 3  # Lowest priority (pushed last)
-                elif node.node_type == "dummy_check":
-                    return 1  # High priority (pushed early)
-                else:
-                    return 2  # Default priority for normal tasks
-
-            chiplet_nodes_sorted = sorted(
-                [node for node in topo_sorted_nodes if node.assigned_chiplet_id == chiplet_id],
-                key=node_priority
-            )
-
             # Generate the SystemVerilog push sequence for the sorted nodes
-            for node in chiplet_nodes_sorted:
+            for node in chiplet_nodes:
                 chiplet_sv.append("    fork")
-                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_aw(TASK_QUEUE_BASE, '0);")
+                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_aw(task_queue_base[{chiplet_id}], '0);")
                 chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_w({node.node_name}, {{HOST_DW/8{{1'b1}}}});")
                 chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.recv_b(resp_chip{chiplet_id});")
                 chiplet_sv.append("    join_none")

@@ -160,7 +160,7 @@ class BingoNode(metaclass=ABCMeta):
             dep_set_code = list_to_one_hot(self._dep_set_list)
             sv_str = (
                 f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                f"    2'b00, // task_type\n"
+                f"    1'b0, // task_type\n"
                 f"    16'd{self._node_id}, // task_id\n"
                 f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
                 f"    {self._assigned_cluster_id}, // assigned_cluster_id\n"
@@ -168,8 +168,10 @@ class BingoNode(metaclass=ABCMeta):
                 f"    1'b{int(self._dep_check_enable)}, // dep_check_en\n"
                 f"    {dep_check_code}, // dep_check_code\n"
                 f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
-                f"    {dep_set_code}, // dep_set_code\n"
-                f"    {self._dep_set_cluster_id} // dep_set_cluster_id\n"
+                f"    1'b{int(self._remote_dep_set_all)}, // dep_set_all_chiplet\n"
+                f"    {self._dep_set_chiplet_id}, // dep_set_chiplet_id\n"
+                f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"   
+                f"    {dep_set_code} // dep_set_code\n"
                 f");"
             )
         elif self._node_type == "dummy":
@@ -178,9 +180,10 @@ class BingoNode(metaclass=ABCMeta):
                 dep_check_code = list_to_one_hot(self._dep_check_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                    f"    2'b01, // task_type\n"
+                    f"    1'b1, // task_type\n"
                     f"    16'd{self._node_id}, // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
+                    f"    {self._assigned_core_id}, // assigned_core_id\n"
                     f"    1'b{int(self._dep_check_enable)}, // dep_check_en\n"
                     f"    {dep_check_code} // dep_check_code\n"
                     f");"
@@ -189,12 +192,16 @@ class BingoNode(metaclass=ABCMeta):
                 dep_set_code = list_to_one_hot(self._dep_set_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                    f"    2'b01, // task_type\n"
-                    f"    16'd{self._node_id}, // task_id\n"
+                    f"    1'b1, // task_type\n"
+                    f"    16'd{self._node_id},  // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
+                    f"    {self._assigned_core_id}, // assigned_core_id\n"
                     f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
-                    f"    {dep_set_code}, // dep_set_code\n"
-                    f"    {self._dep_set_cluster_id} // dep_set_cluster_id\n"
+                    f"    1'b{int(self._remote_dep_set_all)}, // dep_set_all_chiplet\n"
+                    f"    {self._dep_set_chiplet_id}, // dep_set_chiplet_id\n"
+                    f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"   
+                    f"    {dep_set_code} // dep_set_code\n"
+                    f");"
                 )
         else:
             raise ValueError(f"Unsupported node type: {self._node_type}")

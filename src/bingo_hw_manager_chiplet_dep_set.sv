@@ -103,7 +103,7 @@ module bingo_hw_manager_chiplet_dep_set #(
                 chiplet_dep_set_task_desc_ready_o = 1'b0;
                 to_remote_chiplet_axi_lite_req_o.aw_valid = 1'b1;
                 to_remote_chiplet_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-ChipIdWidth-1:0] = chiplet_mailbox_base_addr_i[HostAxiLiteAddrWidth-ChipIdWidth-1:0];
-                to_remote_chiplet_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-1 -: ChipIdWidth] = chiplet_dep_set_task_desc_i.dep_set_all_chiplet ? '1 : chiplet_dep_set_task_desc_i.dep_set_info.dep_set_chiplet_id; 
+                to_remote_chiplet_axi_lite_req_o.aw.addr[HostAxiLiteAddrWidth-1 -: ChipIdWidth] = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_all_chiplet ? '1 : chiplet_dep_set_task_desc_i.dep_set_info.dep_set_chiplet_id; 
                 to_remote_chiplet_axi_lite_req_o.aw.prot = '0;
                 to_remote_chiplet_axi_lite_req_o.w = '0;
                 to_remote_chiplet_axi_lite_req_o.w_valid = 1'b0;

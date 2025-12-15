@@ -1268,32 +1268,32 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     fork
       local_task_drv_chip0.send_aw(task_queue_base[0], '0);
       local_task_drv_chip0.send_w(chip0_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
-      local_task_drv_chip0.recv_b(resp_chip0);
-    join_none
+    join
+   local_task_drv_chip0.recv_b(resp_chip0);
     #50;
     fork
       local_task_drv_chip0.send_aw(task_queue_base[0], '0);
       local_task_drv_chip0.send_w(chip0_cluster1_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip0.recv_b(resp_chip0);
-    join_none
+    join
+   local_task_drv_chip0.recv_b(resp_chip0);
     #50;
     fork
       local_task_drv_chip0.send_aw(task_queue_base[0], '0);
       local_task_drv_chip0.send_w(chip0_cluster0_core2_simd, {HOST_DW/8{1'b1}});
-      local_task_drv_chip0.recv_b(resp_chip0);
-    join_none
+    join
+   local_task_drv_chip0.recv_b(resp_chip0);
     #50;
     fork
       local_task_drv_chip0.send_aw(task_queue_base[0], '0);
       local_task_drv_chip0.send_w(dummy_set_chip0_cluster0_core2_simd_to_chip1_cluster0_core2_simd, {HOST_DW/8{1'b1}});
-      local_task_drv_chip0.recv_b(resp_chip0);
-    join_none
+    join
+   local_task_drv_chip0.recv_b(resp_chip0);
     #50;
     fork
       local_task_drv_chip0.send_aw(task_queue_base[0], '0);
       local_task_drv_chip0.send_w(dummy_set_chip0_cluster0_core2_simd_to_chip2_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
-      local_task_drv_chip0.recv_b(resp_chip0);
-    join_none
+    join
+   local_task_drv_chip0.recv_b(resp_chip0);
     #50;
   end
 
@@ -1306,38 +1306,38 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(chip1_cluster0_core2_simd, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(chip1_cluster1_core0_gemm, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(dummy_set_chip1_cluster0_core2_simd_0, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(chip1_cluster0_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(chip1_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
     fork
       local_task_drv_chip1.send_aw(task_queue_base[1], '0);
       local_task_drv_chip1.send_w(dummy_set_chip1_cluster0_core0_gemm_to_chip3_cluster0_core0_gemm_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip1.recv_b(resp_chip1);
-    join_none
+    join
+   local_task_drv_chip1.recv_b(resp_chip1);
     #50;
   end
 
@@ -1350,44 +1350,44 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(chip2_cluster0_core0_gemm, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(chip2_cluster1_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(dummy_set_chip2_cluster0_core0_gemm_0, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(chip2_cluster0_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(dummy_check_chip2_cluster0_core0_gemm_2_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(chip2_cluster0_core0_gemm_2, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
     fork
       local_task_drv_chip2.send_aw(task_queue_base[2], '0);
       local_task_drv_chip2.send_w(dummy_set_chip2_cluster0_core0_gemm_2_to_chip3_cluster0_core0_gemm_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip2.recv_b(resp_chip2);
-    join_none
+    join
+   local_task_drv_chip2.recv_b(resp_chip2);
     #50;
   end
 
@@ -1400,56 +1400,56 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(dummy_check_chip3_cluster0_core0_gemm_1_0, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_2, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(dummy_set_chip3_cluster0_core0_gemm_1_0, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(dummy_set_chip3_cluster0_core0_gemm_1_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(chip3_cluster0_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(chip3_cluster1_core1_dma, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(dummy_check_chip3_cluster0_core0_gemm_3_1, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
     fork
       local_task_drv_chip3.send_aw(task_queue_base[3], '0);
       local_task_drv_chip3.send_w(chip3_cluster0_core0_gemm_3, {HOST_DW/8{1'b1}});
-      local_task_drv_chip3.recv_b(resp_chip3);
-    join_none
+    join
+   local_task_drv_chip3.recv_b(resp_chip3);
     #50;
   end
 
@@ -1508,10 +1508,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1568,10 +1568,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1628,10 +1628,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1688,10 +1688,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1748,10 +1748,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1808,10 +1808,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip0.send_aw(done_addr, '0);
-      local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip0.send_aw(done_addr, '0);
+           local_done_drv_chip0.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip0.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1868,10 +1868,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1928,10 +1928,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -1988,10 +1988,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2048,10 +2048,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2108,10 +2108,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2168,10 +2168,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip1.send_aw(done_addr, '0);
-      local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip1.send_aw(done_addr, '0);
+           local_done_drv_chip1.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip1.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2228,10 +2228,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2288,10 +2288,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2348,10 +2348,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2408,10 +2408,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2468,10 +2468,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2528,10 +2528,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip2.send_aw(done_addr, '0);
-      local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip2.send_aw(done_addr, '0);
+           local_done_drv_chip2.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip2.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2588,10 +2588,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2648,10 +2648,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2708,10 +2708,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2768,10 +2768,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2828,10 +2828,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 
@@ -2888,10 +2888,10 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
       fork
-      local_done_drv_chip3.send_aw(done_addr, '0);
-      local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+           local_done_drv_chip3.send_aw(done_addr, '0);
+           local_done_drv_chip3.send_w(done_payload, {DEV_DW/8{1'b1}});
+      join
       local_done_drv_chip3.recv_b(resp);
-      join_none
     end
   endtask
 

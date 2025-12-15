@@ -69,10 +69,10 @@ def emit_ready_queue_worker_sv(num_chiplet, num_cluster, num_core):
                                f"      done_info.reserved_bits = '0;\n"
                                f"      done_payload = device_axi_lite_data_t'(done_info);\n"
                                f"      fork\n"
-                               f"      local_done_drv_chip{chip}.send_aw(done_addr, '0);\n"
-                               f"      local_done_drv_chip{chip}.send_w(done_payload, {{DEV_DW/8{{1'b1}}}});\n"
+                               f"           local_done_drv_chip{chip}.send_aw(done_addr, '0);\n"
+                               f"           local_done_drv_chip{chip}.send_w(done_payload, {{DEV_DW/8{{1'b1}}}});\n"
+                               f"      join\n"
                                f"      local_done_drv_chip{chip}.recv_b(resp);\n"
-                               f"      join_none\n"
                                f"    end\n"
                                f"  endtask\n")
     return "\n".join(sv_code)

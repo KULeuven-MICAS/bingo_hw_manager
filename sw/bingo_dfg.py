@@ -353,8 +353,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 chiplet_sv.append("    fork")
                 chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_aw(task_queue_base[{chiplet_id}], '0);")
                 chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_w({node.node_name}, {{HOST_DW/8{{1'b1}}}});")
-                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.recv_b(resp_chip{chiplet_id});")
-                chiplet_sv.append("    join_none")
+                chiplet_sv.append("    join")
+                chiplet_sv.append(f"   local_task_drv_chip{chiplet_id}.recv_b(resp_chip{chiplet_id});")
                 chiplet_sv.append("    #50;")
 
             chiplet_sv.append("  end")

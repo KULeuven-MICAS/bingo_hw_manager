@@ -1,5 +1,6 @@
 # Fanchen Kong <fanchen.kong@kuleuven.be>
 
+import random
 from bingo_utils import DiGraphWrapper
 from bingo_node import BingoNode
 import networkx as nx
@@ -78,8 +79,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         print(f"Node {cur_node.node_name} is a broadcast node to set all chiplets.")
                         dummy_set_node = BingoNode(
                             assigned_chiplet_id=cur_node.assigned_chiplet_id,
-                            assigned_cluster_id=cur_node.assigned_cluster_id, # should be fine since it will not be executed
-                            assigned_core_id=cur_node.assigned_core_id,       # must be the same type of the cur_node to block the execution
+                            assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
+                            assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
                             node_name=f"Chiplet_Dep_set_Broadcast{cur_node.node_name}"
                         )
                         dummy_set_node.node_type = "dummy"
@@ -99,7 +100,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         print(f"Adding dummy set node for {cur_node.node_name} to remote successor {remote_succ.node_name}")
                         dummy_set_node = BingoNode(
                             assigned_chiplet_id=cur_node.assigned_chiplet_id,
-                            assigned_cluster_id=remote_succ.assigned_cluster_id, # should be fine since it will not be executed
+                            assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
                             assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
                             node_name=f"dummy_set_{cur_node.node_name}_to_{remote_succ.node_name}"
                         )
@@ -120,7 +121,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 for i in range(len(succs_list)-1):
                     dummy_set_node = BingoNode(
                         assigned_chiplet_id=cur_node.assigned_chiplet_id,
-                        assigned_cluster_id=succs_list[i].assigned_cluster_id, # should be fine since it will not be executed
+                        assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
                         assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
                         node_name=f"dummy_set_{cur_node.node_name}_{i}"
                     )
@@ -142,27 +143,29 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         #          |           |
         #           \         /
         #            v       v
-        #            gemm(Cl0)
+        #            gemm(Cl0) <-cur node
         # that a node depends on two (more than 1) nodes with same assigned core
         for cur_node in self.node_list:
             # find all the predecessors
-            predecessors = [
+            preds_list = [
                 pred for pred in self.predecessors(cur_node)
             ]
+            # if there are more than 1 predecessor with the same assigned core id, we need to add dummy check nodes
             # find if there are more than 1 predecessor with same assigned core
-            local_predecessor_core_dict = {}
-            for pred in predecessors:
-                if pred.assigned_core_id not in local_predecessor_core_dict:
-                    local_predecessor_core_dict[pred.assigned_core_id] = []
-                local_predecessor_core_dict[pred.assigned_core_id].append(pred)
-            for core_id, preds in local_predecessor_core_dict.items():
+            predecessor_core_dict = {}
+            for pred in preds_list:
+                if pred.assigned_core_id not in predecessor_core_dict:
+                    predecessor_core_dict[pred.assigned_core_id] = []
+                predecessor_core_dict[pred.assigned_core_id].append(pred)
+            dummy_check_nodes_to_add = []
+            for core_id, preds in predecessor_core_dict.items():
                 if len(preds) >= 2:
                     print(f"Adding dummy check node for {cur_node.node_name} with predecessors {[pred.node_name for pred in preds]}")
                     for i in range(len(preds)-1):
                         dummy_check_node = BingoNode(
                             assigned_chiplet_id=cur_node.assigned_chiplet_id,
                             assigned_cluster_id=cur_node.assigned_cluster_id, # should be fine since it will not be executed
-                            assigned_core_id=cur_node.assigned_core_id,    # should be the same type of the cur_node to block the execution
+                            assigned_core_id=cur_node.assigned_core_id,       # should be the same type of the cur_node to block the execution
                             node_name=f"dummy_check_{cur_node.node_name}_{core_id}"
                         )
                         dummy_check_node.node_type = "dummy"
@@ -171,9 +174,25 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         dummy_check_node.dep_set_enable = False
                         dummy_check_node.dep_set_list = []
                         dummy_check_node.dep_set_cluster_id = 0
+                        dummy_check_node.dep_set_chiplet_id = 0
+                        dummy_check_node.remote_dep_set_all = False
+                        dummy_check_nodes_to_add.append(dummy_check_node)
                         # Add the dummy check node to the graph
                         self.bingo_insert_node_between(preds[i], cur_node, dummy_check_node)
-
+            # Temporary solution
+            # For the other predecessors, we connect them to the dummy check node
+            for core_id, preds in predecessor_core_dict.items():
+                if len(preds) == 1:
+                    if dummy_check_nodes_to_add:
+                        # Find the dummy dep check nodes with its predecessors is differnet from this predecessor
+                        best_dummy_nodes = [dummy_node for dummy_node in dummy_check_nodes_to_add
+                                           if dummy_node.dep_check_list[0] != preds[0].assigned_core_id]
+                        if not best_dummy_nodes:
+                            print("Warning: Cannot find suitable dummy check node to connect the predecessor, this is unexpected!")
+                        best_dummy_node = random.choice(best_dummy_nodes)
+                        self.remove_edge(preds[0], cur_node)
+                        self.add_edge(preds[0], best_dummy_node)
+                        best_dummy_node.dep_check_list.append(preds[0].assigned_core_id)
 
     def bingo_assign_normal_node_dep_check_info(self) -> None:
         """Assign the dep check info for normal nodes."""
@@ -347,14 +366,12 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             chiplet_sv.append(f"    automatic axi_pkg::resp_t resp_chip{chiplet_id};")
             chiplet_sv.append(f"    wait (rst_ni);")
             chiplet_sv.append(f"    @(posedge clk_i);")
+            chiplet_sv.append(f"    task_queue_master[{chiplet_id}].reset();")
+            chiplet_sv.append(f"    done_queue_master[{chiplet_id}].reset();")
             chiplet_sv.append("")
             # Generate the SystemVerilog push sequence for the sorted nodes
             for node in chiplet_nodes:
-                chiplet_sv.append("    fork")
-                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_aw(task_queue_base[{chiplet_id}], '0);")
-                chiplet_sv.append(f"      local_task_drv_chip{chiplet_id}.send_w({node.node_name}, {{HOST_DW/8{{1'b1}}}});")
-                chiplet_sv.append("    join")
-                chiplet_sv.append(f"   local_task_drv_chip{chiplet_id}.recv_b(resp_chip{chiplet_id});")
+                chiplet_sv.append(f"      task_queue_master[{chiplet_id}].write(task_queue_base[{chiplet_id}], '0, {node.node_name}, '1, resp_chip{chiplet_id});")
                 chiplet_sv.append("    #50;")
 
             chiplet_sv.append("  end")

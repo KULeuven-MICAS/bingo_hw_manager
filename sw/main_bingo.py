@@ -227,10 +227,10 @@ bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_2, chip3_cluster0_core0_gemm_
 #          |           |                              gemm(Cl0)
 #          |           |                                |
 #          |           v                                |
-#          |          dummy dep check gemm(Cl0)         |
-#          |           ||                               |
-#          |           vv                               |
-#          ---------->gemm(Cl0)<-------------------------
+#          |          dummy dep check gemm(Cl0)<------- | <- notice this edge, it means the dummy dep check gemm will be set by dma(Cl1) as well
+#          |           ||                                    as other predecessors
+#          |           vv                               
+#          ---------->gemm(Cl0)
 #
 # -----------------------------
 # Connect between the chiplets

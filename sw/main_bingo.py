@@ -183,7 +183,7 @@ bingo_dfg.bingo_add_edge(chip2_cluster1_core1_dma, chip2_cluster0_core0_gemm_2)
 #           /          |          |
 #          |           |          |
 #          v           v          v
-#         dma(Cl0)    dma(Cl1)   gemm(Cl0)
+#         dma(Cl0)    dma(Cl1)   simd(Cl0)
 #          |           |          |
 #           \         /           |
 #            v       v            |
@@ -197,23 +197,23 @@ chip3_cluster0_core1_dma = BingoNode(assigned_chiplet_id=3,
 chip3_cluster1_core1_dma = BingoNode(assigned_chiplet_id=3,
                                      assigned_cluster_id=1,
                                      assigned_core_id=1, node_name="chip3_cluster1_core1_dma")
+chip3_cluster0_core2_simd = BingoNode(assigned_chiplet_id=3,
+                                        assigned_cluster_id=0,
+                                        assigned_core_id=2, node_name="chip3_cluster0_core2_simd")
 chip3_cluster0_core0_gemm_2 = BingoNode(assigned_chiplet_id=3,
                                         assigned_cluster_id=0,
                                         assigned_core_id=0, node_name="chip3_cluster0_core0_gemm_2")
-chip3_cluster0_core0_gemm_3 = BingoNode(assigned_chiplet_id=3,
-                                        assigned_cluster_id=0,
-                                        assigned_core_id=0, node_name="chip3_cluster0_core0_gemm_3")
 bingo_dfg.bingo_add_node(chip3_cluster0_core0_gemm_1)
 bingo_dfg.bingo_add_node(chip3_cluster0_core1_dma)
 bingo_dfg.bingo_add_node(chip3_cluster1_core1_dma)
+bingo_dfg.bingo_add_node(chip3_cluster0_core2_simd)
 bingo_dfg.bingo_add_node(chip3_cluster0_core0_gemm_2)
-bingo_dfg.bingo_add_node(chip3_cluster0_core0_gemm_3)
 bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_1, chip3_cluster0_core1_dma)
 bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_1, chip3_cluster1_core1_dma)
-bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_1, chip3_cluster0_core0_gemm_2)
-bingo_dfg.bingo_add_edge(chip3_cluster0_core1_dma, chip3_cluster0_core0_gemm_3)
-bingo_dfg.bingo_add_edge(chip3_cluster1_core1_dma, chip3_cluster0_core0_gemm_3)
-bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_2, chip3_cluster0_core0_gemm_3)
+bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_1, chip3_cluster0_core2_simd)
+bingo_dfg.bingo_add_edge(chip3_cluster0_core1_dma, chip3_cluster0_core0_gemm_2)
+bingo_dfg.bingo_add_edge(chip3_cluster1_core1_dma, chip3_cluster0_core0_gemm_2)
+bingo_dfg.bingo_add_edge(chip3_cluster0_core2_simd, chip3_cluster0_core0_gemm_2)
 # By iteratively applying the above strategies, we can correctly set the dependencies for all tasks in chiplet 3
 #            gemm(Cl0)==================================
 #           /         \\                                ||
@@ -224,7 +224,7 @@ bingo_dfg.bingo_add_edge(chip3_cluster0_core0_gemm_2, chip3_cluster0_core0_gemm_
 #          |           |                                |
 #          |           v                                |
 #          |          dma(Cl1)                          v
-#          |           |                              gemm(Cl0)
+#          |           |                              simd(Cl0)
 #          |           |                                |
 #          |           v                                |
 #          |          dummy dep check gemm(Cl0)<------- | <- notice this edge, it means the dummy dep check gemm will be set by dma(Cl1) as well

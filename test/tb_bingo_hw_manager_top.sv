@@ -735,7 +735,7 @@ bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_1 = pack_normal_task
     1'b0, // dep_set_all_chiplet
     3, // dep_set_chiplet_id
     0, // dep_set_cluster_id
-    bingo_hw_manager_dep_code_t'(8'b00000001) // dep_set_code
+    bingo_hw_manager_dep_code_t'(8'b00000100) // dep_set_code
 );
 
 bingo_hw_manager_task_desc_full_t chip3_cluster0_core1_dma = pack_normal_task(
@@ -768,12 +768,12 @@ bingo_hw_manager_task_desc_full_t chip3_cluster1_core1_dma = pack_normal_task(
     bingo_hw_manager_dep_code_t'(8'b00000001) // dep_set_code
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_2 = pack_normal_task(
+bingo_hw_manager_task_desc_full_t chip3_cluster0_core2_simd = pack_normal_task(
     1'b0, // task_type
     16'd15, // task_id
     3, // assigned_chiplet_id
     0, // assigned_cluster_id
-    0, // assigned_core_id
+    2, // assigned_core_id
     1'b1, // dep_check_en
     bingo_hw_manager_dep_code_t'(8'b00000001), // dep_check_code
     1'b1, // dep_set_en
@@ -783,7 +783,7 @@ bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_2 = pack_normal_task
     bingo_hw_manager_dep_code_t'(8'b00000001) // dep_set_code
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_3 = pack_normal_task(
+bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_2 = pack_normal_task(
     1'b0, // task_type
     16'd16, // task_id
     3, // assigned_chiplet_id
@@ -922,14 +922,14 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_1_0 = pa
     bingo_hw_manager_dep_code_t'(8'b00000001) // dep_check_code
 );
 
-bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pack_dummy_check_task(
+bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pack_dummy_check_task(
     1'b1, // task_type
     16'd27, // task_id
     3, // assigned_chiplet_id
     0, // assigned_cluster_id
     0, // assigned_core_id
     1'b1, // dep_check_en
-    bingo_hw_manager_dep_code_t'(8'b00000011) // dep_check_code
+    bingo_hw_manager_dep_code_t'(8'b00000110) // dep_check_code
 );
   host_axi_lite_addr_t [NUM_CHIPLET-1:0] task_queue_base;
   assign task_queue_base[0] = {chip_id[0],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]};
@@ -1014,7 +1014,7 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     #50;
       task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core0_gemm_1, '1, resp_chip3);
     #50;
-      task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core0_gemm_2, '1, resp_chip3);
+      task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core2_simd, '1, resp_chip3);
     #50;
       task_queue_master[3].write(task_queue_base[3], '0, dummy_set_chip3_cluster0_core0_gemm_1_0, '1, resp_chip3);
     #50;
@@ -1024,9 +1024,9 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_3_1 = pa
     #50;
       task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster1_core1_dma, '1, resp_chip3);
     #50;
-      task_queue_master[3].write(task_queue_base[3], '0, dummy_check_chip3_cluster0_core0_gemm_3_1, '1, resp_chip3);
+      task_queue_master[3].write(task_queue_base[3], '0, dummy_check_chip3_cluster0_core0_gemm_2_1, '1, resp_chip3);
     #50;
-      task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core0_gemm_3, '1, resp_chip3);
+      task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core0_gemm_2, '1, resp_chip3);
     #50;
   end
   logic [NUM_CHIPLET-1:0] done_queue_lock;

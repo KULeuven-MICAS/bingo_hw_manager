@@ -18,6 +18,7 @@ module tb_bingo_hw_manager_top;
     // ---------------------------------------------------------------------------
     // Local configuration
     // ---------------------------------------------------------------------------
+    localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 0; // 1: AXI Lite 0: CSR Req/Resp
     localparam int unsigned NUM_CHIPLET = 4;
     localparam int unsigned NUM_CLUSTERS_PER_CHIPLET = 2;
     localparam int unsigned NUM_CORES_PER_CLUSTER    = 3;
@@ -134,6 +135,25 @@ module tb_bingo_hw_manager_top;
         bingo_hw_manager_task_id_t           task_id;
         bingo_hw_manager_dep_set_info_t      dep_set_info;
     } bingo_hw_manager_checkout_task_desc_t;
+
+    // CSR TYPEs
+    typedef struct packed {
+      device_axi_lite_addr_t   addr;
+      device_axi_lite_data_t   data;
+      logic                    write;
+    } csr_req_t;
+    typedef struct packed {
+      device_axi_lite_data_t   data;
+    } csr_rsp_t;
+    function automatic int flat_id(
+      input int     chip_id,
+      input int  cluster_id,
+      input int     core_id
+    );
+      return chip_id * NUM_CLUSTERS_PER_CHIPLET * NUM_CORES_PER_CLUSTER +
+             cluster_id * NUM_CORES_PER_CLUSTER +
+             core_id;
+  endfunction
   // ---------------------------------------------------------------------------
   // Task descriptor packing helper
   // ---------------------------------------------------------------------------
@@ -272,31 +292,28 @@ module tb_bingo_hw_manager_top;
     `AXI_LITE_ASSIGN_TO_REQ  (local_done_queue_req[chiplet_idx] , local_done_if[chiplet_idx]);
     `AXI_LITE_ASSIGN_FROM_RESP(local_done_if[chiplet_idx] , local_done_queue_resp[chiplet_idx]);
   end
-
-
   // Local Ready Queue interface
-  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip0;
-  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip0;
-  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip1;
-  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip1;
-  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip2;
-  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip2;
-  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req_chip3;
-  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp_chip3;
+  dev_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_req [NUM_CHIPLET];
+  dev_resp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_ready_queue_resp [NUM_CHIPLET];
   // Connect the wires to if
-  for(genvar cluster_idx = 0; cluster_idx < NUM_CLUSTERS_PER_CHIPLET; cluster_idx++) begin
-    for(genvar core_idx = 0; core_idx < NUM_CORES_PER_CLUSTER; core_idx++) begin
-      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip0[core_idx][cluster_idx] , local_ready_if[0*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[0*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx] , local_ready_queue_resp_chip0[core_idx][cluster_idx]);
-      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip1[core_idx][cluster_idx] , local_ready_if[1*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[1*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx] , local_ready_queue_resp_chip1[core_idx][cluster_idx]);
-      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip2[core_idx][cluster_idx] , local_ready_if[2*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[2*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx] , local_ready_queue_resp_chip2[core_idx][cluster_idx]);
-      `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req_chip3[core_idx][cluster_idx] , local_ready_if[3*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx]);
-      `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[3*NUM_CLUSTERS_PER_CHIPLET*NUM_CORES_PER_CLUSTER + cluster_idx*NUM_CORES_PER_CLUSTER + core_idx] , local_ready_queue_resp_chip3[core_idx][cluster_idx]);
+
+  for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin
+    for(genvar cluster_idx = 0; cluster_idx < NUM_CLUSTERS_PER_CHIPLET; cluster_idx++) begin
+      for(genvar core_idx = 0; core_idx < NUM_CORES_PER_CLUSTER; core_idx++) begin
+        `AXI_LITE_ASSIGN_TO_REQ  (local_ready_queue_req[chiplet_idx][core_idx][cluster_idx] , local_ready_if[flat_id(chiplet_idx, cluster_idx, core_idx)] );
+        `AXI_LITE_ASSIGN_FROM_RESP(local_ready_if[flat_id(chiplet_idx, cluster_idx, core_idx)] , local_ready_queue_resp[chiplet_idx][core_idx][cluster_idx]);
+      end
     end
   end
 
+
+  // CSR Interfaces
+  csr_req_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_req [NUM_CHIPLET];
+  logic     [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_req_valid [NUM_CHIPLET];
+  logic     [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_req_ready [NUM_CHIPLET];
+  csr_rsp_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_resp [NUM_CHIPLET];
+  logic     [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_resp_valid [NUM_CHIPLET];
+  logic     [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] csr_resp_ready [NUM_CHIPLET];
   // ---------------------------
   // H2H Chiplet Xbar
   // ---------------------------
@@ -419,142 +436,55 @@ module tb_bingo_hw_manager_top;
       end
     end
   end
-  device_axi_lite_addr_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_base_addr_2d;
-  for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
-    for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-      assign ready_base_addr_2d[core][cluster] = READY_QUEUE_BASE + ((core + cluster*NUM_CORES_PER_CLUSTER) * READY_QUEUE_STRIDE);
-    end
-  end
 
   chip_id_t [NUM_CHIPLET-1:0] chip_id;
   assign chip_id[0] = 8'h0;
   assign chip_id[1] = 8'h1;
   assign chip_id[2] = 8'h2;
   assign chip_id[3] = 8'h3;
-  bingo_hw_manager_top #(
-    .NUM_CHIPLET              (NUM_CHIPLET              ),
-    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
-    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
-    .HostAxiLiteAddrWidth     (HOST_AW                  ),
-    .HostAxiLiteDataWidth     (HOST_DW                  ),
-    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
-    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-    .host_axi_lite_req_t      (host_req_t               ),
-    .host_axi_lite_resp_t     (host_resp_t              ),
-    .device_axi_lite_req_t    (dev_req_t                ),
-    .device_axi_lite_resp_t   (dev_resp_t               )
-  ) i_dut_chip0 (
-    .clk_i                              (clk_i                                                    ),
-    .rst_ni                             (rst_ni                                                   ),
-    .chip_id_i                          (chip_id[0]                                                ),
-    .task_queue_base_addr_i             ({chip_id[0],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .task_queue_axi_lite_req_i          (local_task_queue_req[0]                                  ),
-    .task_queue_axi_lite_resp_o         (local_task_queue_resp[0]                                 ),
-    .chiplet_mailbox_base_addr_i        ({chip_id[0],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
-    .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[0]                              ),
-    .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[0]                             ),
-    .from_remote_axi_lite_req_i         (h2h_axi_lite_xbar_out_req[0]                             ),
-    .from_remote_axi_lite_resp_o        (h2h_axi_lite_xbar_out_resp[0]                            ),
-    .done_queue_base_addr_i             ({chip_id[0],DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .done_queue_axi_lite_req_i          (local_done_queue_req[0]                                  ),
-    .done_queue_axi_lite_resp_o         (local_done_queue_resp[0]                                 ),
-    .ready_queue_base_addr_i            (ready_base_addr_2d                                       ),
-    .ready_queue_axi_lite_req_i         (local_ready_queue_req_chip0                              ),
-    .ready_queue_axi_lite_resp_o        (local_ready_queue_resp_chip0                             )
-  );    
-  bingo_hw_manager_top #(
-    .NUM_CHIPLET              (NUM_CHIPLET              ),
-    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
-    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
-    .HostAxiLiteAddrWidth     (HOST_AW                  ),
-    .HostAxiLiteDataWidth     (HOST_DW                  ),
-    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
-    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-    .host_axi_lite_req_t      (host_req_t               ),
-    .host_axi_lite_resp_t     (host_resp_t              ),
-    .device_axi_lite_req_t    (dev_req_t                ),
-    .device_axi_lite_resp_t   (dev_resp_t               )
-  ) i_dut_chip1 (
-    .clk_i                              (clk_i                                                    ),
-    .rst_ni                             (rst_ni                                                   ),
-    .chip_id_i                          (chip_id[1]                                                ),
-    .task_queue_base_addr_i             ({chip_id[1],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .task_queue_axi_lite_req_i          (local_task_queue_req[1]                                  ),
-    .task_queue_axi_lite_resp_o         (local_task_queue_resp[1]                                 ),
-    .chiplet_mailbox_base_addr_i        ({chip_id[1],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
-    .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[1]                              ),
-    .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[1]                             ),
-    .from_remote_axi_lite_req_i         (h2h_axi_lite_xbar_out_req[1]                             ),
-    .from_remote_axi_lite_resp_o        (h2h_axi_lite_xbar_out_resp[1]                            ),
-    .done_queue_base_addr_i             ({chip_id[1],DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .done_queue_axi_lite_req_i          (local_done_queue_req[1]                                  ),
-    .done_queue_axi_lite_resp_o         (local_done_queue_resp[1]                                 ),
-    .ready_queue_base_addr_i            (ready_base_addr_2d                                       ),
-    .ready_queue_axi_lite_req_i         (local_ready_queue_req_chip1                              ),
-    .ready_queue_axi_lite_resp_o        (local_ready_queue_resp_chip1                             )
-  );    
-  bingo_hw_manager_top #(
-    .NUM_CHIPLET              (NUM_CHIPLET              ),
-    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
-    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
-    .HostAxiLiteAddrWidth     (HOST_AW                  ),
-    .HostAxiLiteDataWidth     (HOST_DW                  ),
-    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
-    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-    .host_axi_lite_req_t      (host_req_t               ),
-    .host_axi_lite_resp_t     (host_resp_t              ),
-    .device_axi_lite_req_t    (dev_req_t                ),
-    .device_axi_lite_resp_t   (dev_resp_t               )
-  ) i_dut_chip2 (
-    .clk_i                              (clk_i                                                    ),
-    .rst_ni                             (rst_ni                                                   ),
-    .chip_id_i                          (chip_id[2]                                                ),
-    .task_queue_base_addr_i             ({chip_id[2],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .task_queue_axi_lite_req_i          (local_task_queue_req[2]                                  ),
-    .task_queue_axi_lite_resp_o         (local_task_queue_resp[2]                                 ),
-    .chiplet_mailbox_base_addr_i        ({chip_id[2],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
-    .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[2]                              ),
-    .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[2]                             ),
-    .from_remote_axi_lite_req_i         (h2h_axi_lite_xbar_out_req[2]                             ),
-    .from_remote_axi_lite_resp_o        (h2h_axi_lite_xbar_out_resp[2]                            ),
-    .done_queue_base_addr_i             ({chip_id[2],DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .done_queue_axi_lite_req_i          (local_done_queue_req[2]                                  ),
-    .done_queue_axi_lite_resp_o         (local_done_queue_resp[2]                                 ),
-    .ready_queue_base_addr_i            (ready_base_addr_2d                                       ),
-    .ready_queue_axi_lite_req_i         (local_ready_queue_req_chip2                              ),
-    .ready_queue_axi_lite_resp_o        (local_ready_queue_resp_chip2                             )
-  );
-  bingo_hw_manager_top #(
-    .NUM_CHIPLET              (NUM_CHIPLET              ),
-    .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
-    .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
-    .HostAxiLiteAddrWidth     (HOST_AW                  ),
-    .HostAxiLiteDataWidth     (HOST_DW                  ),
-    .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
-    .DeviceAxiLiteDataWidth   (DEV_DW                   ),
-    .host_axi_lite_req_t      (host_req_t               ),
-    .host_axi_lite_resp_t     (host_resp_t              ),
-    .device_axi_lite_req_t    (dev_req_t                ),
-    .device_axi_lite_resp_t   (dev_resp_t               )
-  ) i_dut_chip3 (
-    .clk_i                              (clk_i                                                    ),
-    .rst_ni                             (rst_ni                                                   ),
-    .chip_id_i                          (chip_id[3]                                                ),
-    .task_queue_base_addr_i             ({chip_id[3],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .task_queue_axi_lite_req_i          (local_task_queue_req[3]                                  ),
-    .task_queue_axi_lite_resp_o         (local_task_queue_resp[3]                                 ),
-    .chiplet_mailbox_base_addr_i        ({chip_id[3],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
-    .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[3]                              ),
-    .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[3]                             ),
-    .from_remote_axi_lite_req_i         (h2h_axi_lite_xbar_out_req[3]                             ),
-    .from_remote_axi_lite_resp_o        (h2h_axi_lite_xbar_out_resp[3]                            ),
-    .done_queue_base_addr_i             ({chip_id[3],DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
-    .done_queue_axi_lite_req_i          (local_done_queue_req[3]                                  ),
-    .done_queue_axi_lite_resp_o         (local_done_queue_resp[3]                                 ),
-    .ready_queue_base_addr_i            (ready_base_addr_2d                                       ),
-    .ready_queue_axi_lite_req_i         (local_ready_queue_req_chip3                              ),
-    .ready_queue_axi_lite_resp_o        (local_ready_queue_resp_chip3                             )
-  );
+
+  for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_dut
+    bingo_hw_manager_top #(
+      .READY_AND_DONE_QUEUE_INTERFACE_TYPE(READY_AND_DONE_QUEUE_INTERFACE_TYPE),
+      .NUM_CHIPLET              (NUM_CHIPLET              ),
+      .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
+      .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
+      .HostAxiLiteAddrWidth     (HOST_AW                  ),
+      .HostAxiLiteDataWidth     (HOST_DW                  ),
+      .DeviceAxiLiteAddrWidth   (DEV_AW                   ),
+      .DeviceAxiLiteDataWidth   (DEV_DW                   ),
+      .host_axi_lite_req_t      (host_req_t               ),
+      .host_axi_lite_resp_t     (host_resp_t              ),
+      .device_axi_lite_req_t    (dev_req_t                ),
+      .device_axi_lite_resp_t   (dev_resp_t               ),
+      .csr_req_t                (csr_req_t                ),
+      .csr_rsp_t                (csr_rsp_t                )
+    ) i_dut (
+      .clk_i                              (clk_i                                                     ),
+      .rst_ni                             (rst_ni                                                    ),
+      .chip_id_i                          (chip_id[chiplet_idx]                                                ),
+      .task_queue_base_addr_i             ({chip_id[chiplet_idx],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
+      .task_queue_axi_lite_req_i          (local_task_queue_req[chiplet_idx]                                   ),
+      .task_queue_axi_lite_resp_o         (local_task_queue_resp[chiplet_idx]                                  ),
+      .chiplet_mailbox_base_addr_i        ({chip_id[chiplet_idx],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
+      .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[chiplet_idx]                               ),
+      .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[chiplet_idx]                              ),
+      .from_remote_axi_lite_req_i         (h2h_axi_lite_xbar_out_req[chiplet_idx]                              ),
+      .from_remote_axi_lite_resp_o        (h2h_axi_lite_xbar_out_resp[chiplet_idx]                             ),
+      .done_queue_base_addr_i             ({chip_id[chiplet_idx],DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
+      .done_queue_axi_lite_req_i          (local_done_queue_req[chiplet_idx]                                   ),
+      .done_queue_axi_lite_resp_o         (local_done_queue_resp[chiplet_idx]                                  ),
+      .ready_queue_base_addr_i            ({chip_id[chiplet_idx],READY_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}    ),
+      .ready_queue_axi_lite_req_i         (local_ready_queue_req[chiplet_idx]                                  ),
+      .ready_queue_axi_lite_resp_o        (local_ready_queue_resp[chiplet_idx]                                 ),
+      .csr_req_i                          (csr_req[chiplet_idx]                                                ),
+      .csr_req_valid_i                    (csr_req_valid[chiplet_idx]                                          ),
+      .csr_req_ready_o                    (csr_req_ready[chiplet_idx]                                          ),
+      .csr_rsp_o                          (csr_resp[chiplet_idx]                                               ),
+      .csr_rsp_valid_o                    (csr_resp_valid[chiplet_idx]                                         ),
+      .csr_rsp_ready_i                    (csr_resp_ready[chiplet_idx]                                         )
+    );
+  end
   // ---------------------------------------------------------------------------
   // Stimulus threads
   // ---------------------------------------------------------------------------
@@ -1029,8 +959,83 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pa
       task_queue_master[3].write(task_queue_base[3], '0, chip3_cluster0_core0_gemm_2, '1, resp_chip3);
     #50;
   end
+
+  task automatic reset_csr_interface();
+    for (int chip_id = 0; chip_id < NUM_CHIPLET; chip_id++) begin
+      for (int cluster_id = 0; cluster_id < NUM_CLUSTERS_PER_CHIPLET; cluster_id++) begin
+        for (int core_id = 0; core_id < NUM_CORES_PER_CLUSTER; core_id++) begin
+          csr_req[chip_id][core_id][cluster_id]        <= '0;
+          csr_req_valid[chip_id][core_id][cluster_id]  <= 1'b0;
+          csr_resp_ready[chip_id][core_id][cluster_id] <= 1'b0;
+        end
+      end
+    end
+    @(posedge clk_i);
+  endtask
+
+  task automatic csr_read(
+    input int chip_id,
+    input int cluster_id,
+    input int core_id,
+    input device_axi_lite_addr_t addr,
+    output device_axi_lite_data_t data
+  );
+    // 1. Drive Request
+    // Note: Indexing is [chip_id][core_id][cluster_id] based on declaration order
+    csr_req[chip_id][core_id][cluster_id].addr  <= addr;
+    csr_req[chip_id][core_id][cluster_id].write <= 1'b0;
+    csr_req[chip_id][core_id][cluster_id].data  <= '0;
+    csr_req_valid[chip_id][core_id][cluster_id] <= 1'b1;
+    csr_resp_ready[chip_id][core_id][cluster_id] <= 1'b1;
+    // 2. Wait for Grant (req_ready)
+    while (csr_req_ready[chip_id][core_id][cluster_id] !== 1'b1) begin
+      @(posedge clk_i);
+    end
+
+    $display("%0t Chip%0d Cluster%0d Core%0d CSR Read Request Granted",
+             $time, chip_id, cluster_id, core_id);
+    // Wait for Response (resp_valid)
+    while (csr_resp_valid[chip_id][core_id][cluster_id] !== 1'b1) begin
+      @(posedge clk_i);
+    end
+    $display("%0t Chip%0d Cluster%0d Core%0d CSR Read Response Valid",
+             $time, chip_id, cluster_id, core_id);
+    // Sample Data
+    data = csr_resp[chip_id][core_id][cluster_id].data;
+
+    // Deassert valid and ready
+    csr_req_valid[chip_id][core_id][cluster_id] <= 1'b0;
+    csr_resp_ready[chip_id][core_id][cluster_id] <= 1'b0;
+  endtask
+
+  task automatic csr_write(
+    input int chip_id,
+    input int cluster_id,
+    input int core_id,
+    input device_axi_lite_addr_t addr,
+    input device_axi_lite_data_t data
+  );
+    // 1. Drive Request
+    // Note: Indexing is [chip_id][core_id][cluster_id] based on declaration order
+    csr_req[chip_id][core_id][cluster_id].addr  <= addr;
+    csr_req[chip_id][core_id][cluster_id].write <= 1'b1;
+    csr_req[chip_id][core_id][cluster_id].data  <= data;
+    csr_req_valid[chip_id][core_id][cluster_id] <= 1'b1;
+    csr_resp_ready[chip_id][core_id][cluster_id] <= 1'b0;
+
+    // 2. Wait for Grant (req_ready)
+    while (csr_req_ready[chip_id][core_id][cluster_id] !== 1'b1) begin
+      @(posedge clk_i);
+    end
+    $display("%0t Chip%0d Cluster%0d Core%0d CSR Write Request Granted",
+             $time, chip_id, cluster_id, core_id);
+
+    // 3. Deassert Request
+    csr_req_valid[chip_id][core_id][cluster_id] <= 1'b0;  
+  endtask
+
   logic [NUM_CHIPLET-1:0] done_queue_lock;
-  task automatic ready_queue_worker(
+  task automatic core_worker(
     input chip_id_t chip_id,
     input int cluster_id,
     input int core_id
@@ -1053,28 +1058,34 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pa
     status_addr[DEV_AW-ChipIdWidth-1:0] = READY_QUEUE_BASE + device_axi_lite_addr_t'((core_id + cluster_id * NUM_CORES_PER_CLUSTER) * READY_QUEUE_STRIDE) + 32'd8;
     $display("%0t Chip%0d READY[Core%0d, Cluster%0d] worker started, idx %0d", $time, chip_id, core_id, cluster_id, idx);
     forever begin
-      ready_queue_master[idx].read(status_addr, '0, status, resp);
-      repeat (5) @(posedge clk_i);
-      // Check the status
-      // If no task is ready, retry after some time
-      // status[0] == 1 means no task is ready
-      if (status[0]) begin
-        repeat (10) @(posedge clk_i);
-        continue;
+      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin
+        // AXI Lite Read
+        ready_queue_master[idx].read(status_addr, '0, status, resp);
+        repeat (5) @(posedge clk_i);
+        // Check the status
+        // If no task is ready, retry after some time
+        // status[0] == 1 means no task is ready
+        if (status[0]) begin
+          repeat (10) @(posedge clk_i);
+          continue;
+        end
+        // Here the core sees a task is ready
+        $display("%0t Chip%0d READY[Core%0d, Cluster%0d] Status Reg[0]: %d, Task is ready!", $time, chip_id, core_id, cluster_id, status[0]);
+        // Read the task id
+        ready_queue_master[idx].read(data_addr, '0, data, resp);
+      end else begin
+        // CSR Read
+        // The csr address here is not used
+        // We directly read from the fifo instead of reading the status first
+        // If the fifo is empty, the ready signal will be deasserted and the read will continue to wait
+        csr_read(chip_id, cluster_id, core_id, '0, data);
       end
-      // Here the core sees a task is ready
-      $display("%0t Chip%0d READY[Core%0d, Cluster%0d] Status Reg[0]: %d, Task is ready!", $time, chip_id, core_id, cluster_id, status[0]);
-      // Read the task id
-      ready_queue_master[idx].read(data_addr, '0, data, resp);
       repeat (5) @(posedge clk_i);
       $display("%0t Chip%0d READY[Core%0d, Cluster%0d] recvs task_id %0d",
               $time, chip_id, core_id, cluster_id, data[TaskIdWidth-1:0]);
       $display("%0t Chip%0d READY[Core%0d, Cluster%0d] doing some work....",
               $time, chip_id, core_id, cluster_id);                
       repeat ($urandom_range(20, 50)) @(posedge clk_i);
-      // Acquire the lock for the done queue
-      wait (!done_queue_lock[chip_id]); // Wait until the lock is free
-      done_queue_lock[chip_id] = 1'b1;  // Acquire the lock
       $display("%0t Chip%0d READY[Core%0d, Cluster%0d] done with task_id %0d, sending done info back",
               $time, chip_id, core_id, cluster_id, data[TaskIdWidth-1:0]);
       done_info.task_id     = data[TaskIdWidth-1:0];
@@ -1082,45 +1093,71 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pa
       done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core_id);
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
+      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin
+      // Acquire the lock for the done queue
+      wait (!done_queue_lock[chip_id]); // Wait until the lock is free
+      done_queue_lock[chip_id] = 1'b1;  // Acquire the lock
+
+
       done_queue_master[chip_id].write(done_addr, '0, done_payload, {DEV_DW/8{1'b1}}, resp);
       repeat ($urandom_range(20, 50)) @(posedge clk_i);
       // Release the lock
       done_queue_lock[chip_id] = 1'b0;
+      end else begin
+        // CSR Write
+        // The csr address here is not used
+        // We directly write to the fifo
+        csr_write(chip_id, cluster_id, core_id, '0, done_payload);
+        repeat ($urandom_range(10, 20)) @(posedge clk_i);
+      end
     end
 
   endtask
 
 
 initial begin : ready_queue_pollers
+    reset_csr_interface();
     wait (rst_ni);
     repeat (5) @(posedge clk_i);
     done_queue_lock = '0;
-    fork
-      ready_queue_worker(0, 0, 0);
-      ready_queue_worker(0, 0, 1);
-      ready_queue_worker(0, 0, 2);
-      ready_queue_worker(0, 1, 0);
-      ready_queue_worker(0, 1, 1);
-      ready_queue_worker(0, 1, 2);
-      ready_queue_worker(1, 0, 0);
-      ready_queue_worker(1, 0, 1);
-      ready_queue_worker(1, 0, 2);
-      ready_queue_worker(1, 1, 0);
-      ready_queue_worker(1, 1, 1);
-      ready_queue_worker(1, 1, 2);
-      ready_queue_worker(2, 0, 0);
-      ready_queue_worker(2, 0, 1);
-      ready_queue_worker(2, 0, 2);
-      ready_queue_worker(2, 1, 0);
-      ready_queue_worker(2, 1, 1);
-      ready_queue_worker(2, 1, 2);
-      ready_queue_worker(3, 0, 0);
-      ready_queue_worker(3, 0, 1);
-      ready_queue_worker(3, 0, 2);
-      ready_queue_worker(3, 1, 0);
-      ready_queue_worker(3, 1, 1);
-      ready_queue_worker(3, 1, 2);
-    join_none
+    for (int chip_idx = 0; chip_idx < NUM_CHIPLET; chip_idx++) begin
+      for (int cluster_idx = 0; cluster_idx < NUM_CLUSTERS_PER_CHIPLET; cluster_idx++) begin
+        for (int core_idx = 0; core_idx < NUM_CORES_PER_CLUSTER; core_idx++) begin
+          fork
+            automatic int c_id = chip_idx;      // Capture chip index
+            automatic int cl_id = cluster_idx;  // Capture cluster index
+            automatic int co_id = core_idx;     // Capture core index
+            core_worker(c_id, cl_id, co_id);    // Spawn core_worker
+          join_none
+        end
+      end
+    end
+    // fork
+    //   core_worker(0, 0, 0);
+    //   core_worker(0, 0, 1);
+    //   core_worker(0, 0, 2);
+    //   core_worker(0, 1, 0);
+    //   core_worker(0, 1, 1);
+    //   core_worker(0, 1, 2);
+    //   core_worker(1, 0, 0);
+    //   core_worker(1, 0, 1);
+    //   core_worker(1, 0, 2);
+    //   core_worker(1, 1, 0);
+    //   core_worker(1, 1, 1);
+    //   core_worker(1, 1, 2);
+    //   core_worker(2, 0, 0);
+    //   core_worker(2, 0, 1);
+    //   core_worker(2, 0, 2);
+    //   core_worker(2, 1, 0);
+    //   core_worker(2, 1, 1);
+    //   core_worker(2, 1, 2);
+    //   core_worker(3, 0, 0);
+    //   core_worker(3, 0, 1);
+    //   core_worker(3, 0, 2);
+    //   core_worker(3, 1, 0);
+    //   core_worker(3, 1, 1);
+    //   core_worker(3, 1, 2);
+    // join_none
   end
 
 

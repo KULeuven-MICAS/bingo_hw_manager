@@ -4,6 +4,7 @@
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 module bingo_hw_manager_top #(
     // Top-level parameters can be defined here
+    parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 0, // 1: AXI Lite 0: CSR Req/Resp
     parameter int unsigned NUM_CHIPLET = 4,
     parameter int unsigned NUM_CORES_PER_CLUSTER = 4,
     parameter int unsigned NUM_CLUSTERS_PER_CHIPLET = 2,
@@ -21,16 +22,22 @@ module bingo_hw_manager_top #(
     parameter type host_axi_lite_resp_t = logic,
     parameter type device_axi_lite_req_t = logic,
     parameter type device_axi_lite_resp_t = logic,
+    parameter type csr_req_t = logic,
+    parameter type csr_rsp_t = logic,
     // FIFO Depths
     parameter int unsigned TaskQueueDepth = 32,
     parameter int unsigned ChipletDoneQueueDepth = 32,
     parameter int unsigned DoneQueueDepth = 32,
     parameter int unsigned CheckoutQueueDepth = 8,
     parameter int unsigned ReadyQueueDepth = 8,
+    // Address Offsets
+    parameter int unsigned ReadyQueueAddrOffset = 4096,
     // Dependent parameters, DO NOT OVERRIDE!
     parameter type chip_id_t = logic [ChipIdWidth-1:0],
     parameter type host_axi_lite_addr_t = logic [HostAxiLiteAddrWidth-1:0],
-    parameter type device_axi_lite_addr_t = logic [DeviceAxiLiteAddrWidth-1:0]
+    parameter type host_axi_lite_data_t = logic [HostAxiLiteDataWidth-1:0],
+    parameter type device_axi_lite_addr_t = logic [DeviceAxiLiteAddrWidth-1:0],
+    parameter type device_axi_lite_data_t = logic [DeviceAxiLiteDataWidth-1:0]
 ) (
     /// Clock
     input logic clk_i,
@@ -62,16 +69,22 @@ module bingo_hw_manager_top #(
     input  device_axi_lite_addr_t               done_queue_base_addr_i,
     input  device_axi_lite_req_t                done_queue_axi_lite_req_i,
     output device_axi_lite_resp_t               done_queue_axi_lite_resp_o,
-
     // The ready queue interface to the devices
     // HW scheduler -----> Ready Queue
     // Here the ready queue holds the tasks that are ready to be executed by the devices
     // The device cores will read tasks from this queue via 32bit AXI Lite
     // Each core has its own ready queue interface
-    input  device_axi_lite_addr_t            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_base_addr_i,
+    input  device_axi_lite_addr_t                ready_queue_base_addr_i,
     input  device_axi_lite_req_t             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_req_i,
-    output device_axi_lite_resp_t            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_resp_o
-
+    output device_axi_lite_resp_t            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_resp_o,
+    // CSR Req/Resp Interface for ready queue and the done queue
+    // CSR Will Read from the ready queue and write to the done queue
+    input  csr_req_t                         [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_i,
+    input  logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_valid_i,
+    output logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_ready_o,
+    output csr_rsp_t                         [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_o,
+    output logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_valid_o,
+    input  logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_ready_i
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
@@ -328,9 +341,15 @@ module bingo_hw_manager_top #(
     // Ready queue signals
     //////////////////////
     // Ready task info
-    bingo_hw_manager_ready_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_task_desc;
+    device_axi_lite_addr_t                  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_base_addr;
+    bingo_hw_manager_ready_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_in;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_push;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_full;
+    // ready queue data_o/empty_o/pop_i signals are only for CSR interface
+    logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_pop;
+    bingo_hw_manager_ready_task_desc_full_t  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_out;
+    logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_empty;
+
 
     //////////////////////
     // Checkout queue signals
@@ -368,9 +387,12 @@ module bingo_hw_manager_top #(
     // Done Queue signals
     ///////////////////////////////////////
     bingo_hw_manager_done_info_full_t    cur_done_queue_info;
-    logic [DeviceAxiLiteDataWidth-1:0]   done_queue_mbox_data;
+    device_axi_lite_data_t               done_queue_mbox_data;
     logic                                done_queue_mbox_pop;
     logic                                done_queue_mbox_empty;
+    device_axi_lite_data_t               done_queue_mbox_data_in;
+    logic                                done_queue_mbox_push;
+    logic                                done_queue_mbox_full;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -733,32 +755,60 @@ module bingo_hw_manager_top #(
             // Drop the dummy set tasks
             assign ready_queue_filter_drop[core][cluster] = (waiting_dep_check_task_desc[core].task_type) && 
                                                                         (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1);
-            assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];                                    
-            bingo_hw_manager_read_mailbox #(
-                .MailboxDepth(ReadyQueueDepth                ),
-                .IrqEdgeTrig (1'b0                           ),
-                .IrqActHigh  (1'b1                           ),
-                .AxiAddrWidth(DeviceAxiLiteAddrWidth         ),
-                .AxiDataWidth(DeviceAxiLiteDataWidth         ),
-                .ChipIdWidth (ChipIdWidth                    ),
-                .req_lite_t  (device_axi_lite_req_t          ),
-                .resp_lite_t (device_axi_lite_resp_t         )
-            ) i_bingo_hw_manager_ready_queue (
-                .clk_i       (clk_i                                      ),
-                .rst_ni      (rst_ni                                     ),
-                .chip_id_i   (chip_id_i                                  ),
-                .test_i      (1'b0                                       ),
-                .req_i       (ready_queue_axi_lite_req_i[core][cluster]  ),
-                .resp_o      (ready_queue_axi_lite_resp_o[core][cluster] ),
-                .irq_o       (/*not used*/                               ),
-                .base_addr_i (ready_queue_base_addr_i[core][cluster]     ),
-                .mbox_data_i (ready_queue_task_desc[core][cluster]       ),
-                .mbox_push_i (ready_queue_push[core][cluster]            ),
-                .mbox_full_o (ready_queue_full[core][cluster]            ),
-                .mbox_flush_i(1'b0                                       )
-            );
-            assign ready_queue_task_desc[core][cluster].task_id = waiting_dep_check_task_desc[core].task_id;
-            assign ready_queue_task_desc[core][cluster].reserved_bits = '0;
+            assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
+            if (READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin: gen_ready_queue_axi_lite_mailbox                               
+                bingo_hw_manager_read_mailbox #(
+                    .MailboxDepth(ReadyQueueDepth                ),
+                    .IrqEdgeTrig (1'b0                           ),
+                    .IrqActHigh  (1'b1                           ),
+                    .AxiAddrWidth(DeviceAxiLiteAddrWidth         ),
+                    .AxiDataWidth(DeviceAxiLiteDataWidth         ),
+                    .ChipIdWidth (ChipIdWidth                    ),
+                    .req_lite_t  (device_axi_lite_req_t          ),
+                    .resp_lite_t (device_axi_lite_resp_t         )
+                ) i_bingo_hw_manager_ready_queue (
+                    .clk_i       (clk_i                                                        ),
+                    .rst_ni      (rst_ni                                                       ),
+                    .chip_id_i   (chip_id_i                                                    ),
+                    .test_i      (1'b0                                                         ),
+                    .req_i       (ready_queue_axi_lite_req_i[core][cluster]                    ),
+                    .resp_o      (ready_queue_axi_lite_resp_o[core][cluster]                   ),
+                    .irq_o       (/*not used*/                                                 ),
+                    .base_addr_i (ready_queue_base_addr[core][cluster]                         ),
+                    .mbox_data_i (ready_queue_data_in[core][cluster]                           ),
+                    .mbox_push_i (ready_queue_push[core][cluster]                              ),
+                    .mbox_full_o (ready_queue_full[core][cluster]                              ),
+                    .mbox_flush_i(1'b0                                                         )
+                );
+                // Tie off the generic fifo read signals
+                assign ready_queue_pop[core][cluster] = 1'b0;
+                assign ready_queue_empty[core][cluster] = 1'b0;
+                assign ready_queue_data_out[core][cluster] = '0;
+            end else begin: gen_ready_queue_generic_fifo
+                fifo_v3 #(
+                    .FALL_THROUGH ( 1'b0                                      ),
+                    .DEPTH        ( ReadyQueueDepth                           ),
+                    .dtype        ( bingo_hw_manager_ready_task_desc_full_t   )
+                ) i_ready_queue (
+                    .clk_i       ( clk_i                                  ),
+                    .rst_ni      ( rst_ni                                 ),
+                    .testmode_i  ( 1'b0                                   ),
+                    .flush_i     ( 1'b0                                   ),
+                    .full_o      ( ready_queue_full[core][cluster]        ),
+                    .empty_o     ( ready_queue_empty[core][cluster]       ),
+                    .usage_o     ( /*not used*/                           ),
+                    .data_i      ( ready_queue_data_in[core][cluster]     ),
+                    .push_i      ( ready_queue_push[core][cluster]        ),
+                    .data_o      ( ready_queue_data_out[core][cluster]    ),
+                    .pop_i       ( ready_queue_pop[core][cluster]         )
+                );
+                // Since we do not have the axi lite interface, we tie off the ready queue axi lite resp signals
+                assign ready_queue_axi_lite_resp_o[core][cluster] = '0;
+            end
+            assign ready_queue_base_addr[core][cluster] = ready_queue_base_addr_i +
+                                                        (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset;
+            assign ready_queue_data_in[core][cluster].task_id = waiting_dep_check_task_desc[core].task_id;
+            assign ready_queue_data_in[core][cluster].reserved_bits = '0;
             assign ready_queue_push[core][cluster] = ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster];
         end
     end
@@ -837,29 +887,55 @@ module bingo_hw_manager_top #(
     // This is the done queue interface
     // Device will writes completed tasks info to this queue via 32bit AXI Lite
     // The information contains task ID, cluster id and core id
-    bingo_hw_manager_write_mailbox #(
-        .MailboxDepth(DoneQueueDepth               ),
-        .IrqEdgeTrig (1'b0                         ),
-        .IrqActHigh  (1'b1                         ),
-        .AxiAddrWidth(DeviceAxiLiteAddrWidth       ),
-        .AxiDataWidth(DeviceAxiLiteDataWidth       ),
-        .ChipIdWidth (ChipIdWidth                  ),
-        .req_lite_t  (device_axi_lite_req_t        ),
-        .resp_lite_t (device_axi_lite_resp_t       )
-    ) i_bingo_hw_manager_done_queue (
-        .clk_i       (clk_i                     ),
-        .rst_ni      (rst_ni                    ),
-        .chip_id_i   (chip_id_i                 ),
-        .test_i      (1'b0                      ),
-        .req_i       (done_queue_axi_lite_req_i ),
-        .resp_o      (done_queue_axi_lite_resp_o),
-        .irq_o       (),
-        .base_addr_i (done_queue_base_addr_i    ),
-        .mbox_data_o (done_queue_mbox_data      ),
-        .mbox_pop_i  (done_queue_mbox_pop       ),
-        .mbox_empty_o(done_queue_mbox_empty     ),
-        .mbox_flush_i(1'b0)
-    );
+    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin: gen_done_queue_axi_lite_mailbox
+        bingo_hw_manager_write_mailbox #(
+            .MailboxDepth(DoneQueueDepth               ),
+            .IrqEdgeTrig (1'b0                         ),
+            .IrqActHigh  (1'b1                         ),
+            .AxiAddrWidth(DeviceAxiLiteAddrWidth       ),
+            .AxiDataWidth(DeviceAxiLiteDataWidth       ),
+            .ChipIdWidth (ChipIdWidth                  ),
+            .req_lite_t  (device_axi_lite_req_t        ),
+            .resp_lite_t (device_axi_lite_resp_t       )
+        ) i_bingo_hw_manager_done_queue (
+            .clk_i       (clk_i                     ),
+            .rst_ni      (rst_ni                    ),
+            .chip_id_i   (chip_id_i                 ),
+            .test_i      (1'b0                      ),
+            .req_i       (done_queue_axi_lite_req_i ),
+            .resp_o      (done_queue_axi_lite_resp_o),
+            .irq_o       (),
+            .base_addr_i (done_queue_base_addr_i    ),
+            .mbox_data_o (done_queue_mbox_data      ),
+            .mbox_pop_i  (done_queue_mbox_pop       ),
+            .mbox_empty_o(done_queue_mbox_empty     ),
+            .mbox_flush_i(1'b0)
+        );
+        // Tie off the generic fifo write signals
+        assign done_queue_mbox_push = 1'b0;
+        assign done_queue_mbox_data_in = '0;
+        assign done_queue_mbox_full = 1'b0;
+    end else begin: gen_done_queue_generic_fifo
+        fifo_v3 #(
+            .FALL_THROUGH ( 1'b0                               ),
+            .DEPTH        ( DoneQueueDepth                     ),
+            .dtype        ( bingo_hw_manager_done_info_full_t  )
+        ) i_done_queue (
+            .clk_i       ( clk_i                               ),
+            .rst_ni      ( rst_ni                              ),
+            .testmode_i  ( 1'b0                                ),
+            .flush_i     ( 1'b0                                ),
+            .full_o      ( done_queue_mbox_full                ),
+            .empty_o     ( done_queue_mbox_empty               ),
+            .usage_o     ( /*not used*/                        ),
+            .data_i      ( done_queue_mbox_data_in             ),
+            .push_i      ( done_queue_mbox_push                ),
+            .data_o      ( done_queue_mbox_data                ),
+            .pop_i       ( done_queue_mbox_pop                 )
+        );
+        // Since we do not have the axi lite interface, we tie off the done queue axi lite resp signals
+        assign done_queue_axi_lite_resp_o = '0;
+    end
     assign cur_done_queue_info = bingo_hw_manager_done_info_full_t'(done_queue_mbox_data);
     // Pop the done queue when
     // there is a normal task at the head of the checkout queue
@@ -867,5 +943,95 @@ module bingo_hw_manager_top #(
     assign done_queue_mbox_pop = !done_queue_mbox_empty &&
                                  (checkout_queue_data_out[cur_done_queue_info.assigned_core_id][cur_done_queue_info.assigned_cluster_id].task_type==1'b0) &&
                                  (stream_arbiter_dep_matrix_set_inp_ready[cur_done_queue_info.assigned_core_id + cur_done_queue_info.assigned_cluster_id * NUM_CORES_PER_CLUSTER]);
+
+    // For generic FIFO done queue, we need to connect the CSR interface signals
+    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_csr_to_fifo_intf
+        localparam N_CORES_TOTAL = NUM_CLUSTERS_PER_CHIPLET * NUM_CORES_PER_CLUSTER;
+        // 1D CSR Requests
+        csr_req_t [N_CORES_TOTAL-1:0] csr_req_1d;
+        logic     [N_CORES_TOTAL-1:0] csr_req_valid_1d;
+        logic     [N_CORES_TOTAL-1:0] csr_req_ready_1d;
+        csr_rsp_t [N_CORES_TOTAL-1:0] csr_rsp_1d;
+        logic     [N_CORES_TOTAL-1:0] csr_rsp_valid_1d;
+        logic     [N_CORES_TOTAL-1:0] csr_rsp_ready_1d;
+        // 1D Ready Queue FIFO Interface
+        device_axi_lite_data_t [N_CORES_TOTAL-1:0] read_ready_queue_data_1d;
+        logic                  [N_CORES_TOTAL-1:0] read_ready_queue_valid_1d;
+        logic                  [N_CORES_TOTAL-1:0] read_ready_queue_ready_1d;
+        // 1D Done QUeue FIFO Interface
+        device_axi_lite_data_t [N_CORES_TOTAL-1:0] write_done_queue_data_1d;
+        logic                  [N_CORES_TOTAL-1:0] write_done_queue_valid_1d;
+        logic                  [N_CORES_TOTAL-1:0] write_done_queue_ready_1d;
+        device_axi_lite_data_t write_done_queue_data;
+        logic                  write_done_queue_valid;
+        logic                  write_done_queue_ready;
+
+
+        bingo_hw_manager_csr_to_fifo #(
+            .N (N_CORES_TOTAL),
+            .csr_req_t (csr_req_t),
+            .csr_rsp_t (csr_rsp_t),
+            .data_t    (device_axi_lite_data_t)
+        ) i_bingo_hw_manager_csr_to_fifo (
+            .csr_req_i         (csr_req_1d               ),
+            .csr_req_valid_i   (csr_req_valid_1d         ),
+            .csr_req_ready_o   (csr_req_ready_1d         ),
+            .csr_rsp_o         (csr_rsp_1d               ),
+            .csr_rsp_valid_o   (csr_rsp_valid_1d         ),
+            .csr_rsp_ready_i   (csr_rsp_ready_1d         ),
+            // FIFO Read Interface
+            .fifo_data_i       (read_ready_queue_data_1d ),
+            .fifo_data_valid_i (read_ready_queue_valid_1d),
+            .fifo_data_ready_o (read_ready_queue_ready_1d),
+            // FIFO Write Interface
+            .fifo_data_o       (write_done_queue_data_1d ),
+            .fifo_data_valid_o (write_done_queue_valid_1d),
+            .fifo_data_ready_i (write_done_queue_ready_1d)
+        );
+        always_comb begin : connect_ready_queue_1d_to_2d
+            for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+                for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+                    csr_req_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_req_i[core][cluster];
+                    csr_req_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_req_valid_i[core][cluster];
+                    csr_req_ready_o[core][cluster] = csr_req_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER];
+                    csr_rsp_o[core][cluster] = csr_rsp_1d[core + cluster * NUM_CORES_PER_CLUSTER];
+                    csr_rsp_valid_o[core][cluster] = csr_rsp_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER];
+                    csr_rsp_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_rsp_ready_i[core][cluster];
+                    read_ready_queue_data_1d[core + cluster * NUM_CORES_PER_CLUSTER] = device_axi_lite_data_t'(ready_queue_data_out[core][cluster]);
+                    read_ready_queue_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = !ready_queue_empty[core][cluster];
+                    ready_queue_pop[core][cluster] = read_ready_queue_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] && !ready_queue_empty[core][cluster];
+                end
+            end
+        end
+
+        // For the Done Queue, we need a arbiter to arbitrate the write requests from all cores to one done queue
+        stream_arbiter #(
+            .DATA_T(device_axi_lite_data_t),
+            .N_INP (N_CORES_TOTAL)
+        ) i_stream_arbiter_done_queue_write (
+            .clk_i      (clk_i),
+            .rst_ni     (rst_ni),
+            .inp_data_i (write_done_queue_data_1d),
+            .inp_valid_i(write_done_queue_valid_1d),
+            .inp_ready_o(write_done_queue_ready_1d),
+            .oup_data_o (write_done_queue_data),
+            .oup_valid_o(write_done_queue_valid),
+            .oup_ready_i(write_done_queue_ready)
+        );
+        assign done_queue_mbox_data_in = write_done_queue_data;
+        assign done_queue_mbox_push = write_done_queue_valid && !done_queue_mbox_full;
+        assign write_done_queue_ready = !done_queue_mbox_full;
+
+
+    end else begin: gen_no_csr_to_fifo_intf
+        // If it is AXI Lite Mailbox interface, the ready queue and done queue interface are already connected
+        // So we do not need to do anything here
+        // Tie the csr signals to zero
+        assign csr_req_ready_o = '0;
+        assign csr_rsp_o = '0;
+        assign csr_rsp_valid_o = '0;
+    end
+
+
 
 endmodule

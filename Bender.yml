@@ -17,6 +17,7 @@ sources:
   - src/bingo_hw_manager_mailbox_adapter.sv    # AXI Lite to Mailbox Adapter
   - src/bingo_hw_manager_read_mailbox.sv       # AXI Lite read Mailbox Module
   - src/bingo_hw_manager_write_mailbox.sv      # AXI Lite write Mailbox Module
+  - src/bingo_hw_manager_task_queue_master.sv  # Task Queue Master Module
   - src/bingo_hw_manager_csr_to_fifo_write.sv  # CSR to FIFO Write 
   - src/bingo_hw_manager_csr_to_fifo_read.sv   # CSR to FIFO Read
   - src/bingo_hw_manager_csr_to_fifo.sv        # CSR to FIFO Interface Module

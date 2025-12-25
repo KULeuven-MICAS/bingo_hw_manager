@@ -4,11 +4,12 @@
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 module bingo_hw_manager_top #(
     // Top-level parameters can be defined here
-    parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 0, // 1: AXI Lite 0: CSR Req/Resp
-    parameter int unsigned NUM_CHIPLET = 4,
+    parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1, // 1: CSR Req/Resp 0: Default AXi Lite Slave
+    parameter int unsigned TASK_QUEUE_TYPE = 1,                     // 1: AXI Lite Master 0: Default AXI Lite Slave
     parameter int unsigned NUM_CORES_PER_CLUSTER = 4,
     parameter int unsigned NUM_CLUSTERS_PER_CHIPLET = 2,
     parameter int unsigned ChipIdWidth = 8,
+    parameter int unsigned TaskIdWidth = 12,
     // AXI interface types
     // The task queue holds tasks to be scheduled to the devices
     // Host writes the task queue via 64bit AXI Lite
@@ -45,15 +46,26 @@ module bingo_hw_manager_top #(
     input logic rst_ni,
     /// Chip ID for multi-chip addressing
     input chip_id_t chip_id_i,
-
     /// Interface to the system
+    // For the task queue, we have two interfaces:
+    // 1. Host writes to the task queue via 64bit AXI Lite interface
     // Host -----> Task Queue
-    // The task queue interface from the host
     // Here this queue holds all the tasks to be scheduled to the devices
-    // The host core will write tasks into this queue via 64bit AXI Lite
+    // Hence this is a slave AXI Lite interface
     input  host_axi_lite_addr_t                 task_queue_base_addr_i,
     input  host_axi_lite_req_t                  task_queue_axi_lite_req_i,
     output host_axi_lite_resp_t                 task_queue_axi_lite_resp_o,
+    // 2. The Hw Manager issues the read request to the address specified by the host via the following inputs
+    // Hence this is a master AXI Lite interface
+    input host_axi_lite_addr_t                  task_list_base_addr_i, // The task list base address specified by the host
+    input device_axi_lite_data_t                num_task_i,            // The number of tasks specified by the host
+    // Control signals to start the HW Manager
+    // The start signals are from the reg gen modules
+    input  device_axi_lite_data_t               bingo_hw_manager_start_i,
+    output device_axi_lite_data_t               bingo_hw_manager_reset_start_o,
+    output logic                                bingo_hw_manager_reset_start_en_o,
+    output host_axi_lite_req_t                  task_queue_axi_lite_req_o,
+    input  host_axi_lite_resp_t                 task_queue_axi_lite_resp_i,
     // The chiplet set interface to other chiplets
     // HW Manager -----> Other chiplets
     input  host_axi_lite_addr_t                 chiplet_mailbox_base_addr_i,
@@ -88,7 +100,6 @@ module bingo_hw_manager_top #(
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
-    localparam int unsigned TaskIdWidth = 12;
     // Task Type
     // 0: Normal Task
     // 1: Dummy Task
@@ -98,9 +109,9 @@ module bingo_hw_manager_top #(
     // Assigned Chiplet ID
     typedef logic [ChipIdWidth-1:0                     ] bingo_hw_manager_assigned_chiplet_id_t;
     // Assigned Cluster ID
-    typedef logic [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
+    typedef logic [cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
     // Assigned Core ID
-    typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0   ] bingo_hw_manager_assigned_core_id_t;
+    typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0   ] bingo_hw_manager_assigned_core_id_t;
     // Dependency check info struct
     typedef logic [NUM_CORES_PER_CLUSTER-1:0]            bingo_hw_manager_dep_code_t;
     typedef struct packed{
@@ -240,7 +251,7 @@ module bingo_hw_manager_top #(
     /////////////////////////////////////////////////////////
     logic                                           stream_demux_core_type_inp_valid;
     logic                                           stream_demux_core_type_inp_ready;
-    logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0]       stream_demux_core_type_oup_sel;
+    logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]       stream_demux_core_type_oup_sel;
     logic [NUM_CORES_PER_CLUSTER-1:0]               stream_demux_core_type_oup_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0]               stream_demux_core_type_oup_ready;
 
@@ -320,16 +331,16 @@ module bingo_hw_manager_top #(
     // Stream Demux Set Dep Matrix Cluster ID
     ///////////////////////////////////////
     // Possbile to move the demux before the arbiter to support more parallelism
-    logic                                          stream_demux_set_dep_matrix_cluster_id_inp_valid;
-    logic                                          stream_demux_set_dep_matrix_cluster_id_inp_ready;
-    logic  [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0]  stream_demux_set_dep_matrix_cluster_id_oup_sel;
-    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]          stream_demux_set_dep_matrix_cluster_id_oup_valid;
-    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]          stream_demux_set_dep_matrix_cluster_id_oup_ready;
+    logic                                                          stream_demux_set_dep_matrix_cluster_id_inp_valid;
+    logic                                                          stream_demux_set_dep_matrix_cluster_id_inp_ready;
+    logic  [cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0]  stream_demux_set_dep_matrix_cluster_id_oup_sel;
+    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]                          stream_demux_set_dep_matrix_cluster_id_oup_valid;
+    logic  [NUM_CLUSTERS_PER_CHIPLET-1:0]                          stream_demux_set_dep_matrix_cluster_id_oup_ready;
     ///////////////////////////////////////
     // Stream Demux Set Dep Matrix Core ID
     ///////////////////////////////////////
-    typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0]    stream_demux_set_dep_matrix_core_id_oup_sel_t;
-    typedef logic [NUM_CORES_PER_CLUSTER-1:0]            stream_demux_set_dep_matrix_core_id_oup_t;
+    typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]             stream_demux_set_dep_matrix_core_id_oup_sel_t;
+    typedef logic [NUM_CORES_PER_CLUSTER-1:0]                                     stream_demux_set_dep_matrix_core_id_oup_t;
     logic                                          [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_inp_valid;
     logic                                          [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_inp_ready;
     stream_demux_set_dep_matrix_core_id_oup_sel_t  [NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_set_dep_matrix_core_id_oup_sel;
@@ -400,29 +411,64 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Task Queue
     /////////////////////////////////////////////////////////////////////
-    bingo_hw_manager_write_mailbox #(
-        .MailboxDepth(TaskQueueDepth               ),
-        .IrqEdgeTrig (1'b0                         ),
-        .IrqActHigh  (1'b1                         ),
-        .AxiAddrWidth(HostAxiLiteAddrWidth         ),
-        .AxiDataWidth(HostAxiLiteDataWidth         ),
-        .ChipIdWidth (ChipIdWidth                  ),
-        .req_lite_t  (host_axi_lite_req_t          ),
-        .resp_lite_t (host_axi_lite_resp_t         )
-    ) i_bingo_hw_manager_task_queue (
-        .clk_i       (clk_i                     ),
-        .rst_ni      (rst_ni                    ),
-        .chip_id_i   (chip_id_i                 ),
-        .test_i      (1'b0                      ),
-        .req_i       (task_queue_axi_lite_req_i ),
-        .resp_o      (task_queue_axi_lite_resp_o),
-        .irq_o       (/*not used*/              ),
-        .base_addr_i (task_queue_base_addr_i    ),
-        .mbox_data_o (task_queue_mbox_data      ),
-        .mbox_pop_i  (task_queue_mbox_pop       ),
-        .mbox_empty_o(task_queue_mbox_empty     ),
-        .mbox_flush_i('0                        )
-    );
+    if (TASK_QUEUE_TYPE == 0 ) begin : gen_bingo_hw_manager_task_queue_default_slave
+        // Default AXI Lite Slave Task Queue
+        bingo_hw_manager_write_mailbox #(
+            .MailboxDepth(TaskQueueDepth               ),
+            .IrqEdgeTrig (1'b0                         ),
+            .IrqActHigh  (1'b1                         ),
+            .AxiAddrWidth(HostAxiLiteAddrWidth         ),
+            .AxiDataWidth(HostAxiLiteDataWidth         ),
+            .ChipIdWidth (ChipIdWidth                  ),
+            .req_lite_t  (host_axi_lite_req_t          ),
+            .resp_lite_t (host_axi_lite_resp_t         )
+        ) i_bingo_hw_manager_task_queue_slave (
+            .clk_i       (clk_i                     ),
+            .rst_ni      (rst_ni                    ),
+            .chip_id_i   (chip_id_i                 ),
+            .test_i      (1'b0                      ),
+            .req_i       (task_queue_axi_lite_req_i ),
+            .resp_o      (task_queue_axi_lite_resp_o),
+            .irq_o       (/*not used*/              ),
+            .base_addr_i (task_queue_base_addr_i    ),
+            .mbox_data_o (task_queue_mbox_data      ),
+            .mbox_pop_i  (task_queue_mbox_pop       ),
+            .mbox_empty_o(task_queue_mbox_empty     ),
+            .mbox_flush_i('0                        )
+        );
+        // Tie off the unused master interface signals
+        assign task_queue_axi_lite_req_o = '0;
+        assign reset_start_o = 1'b0;
+        assign reset_start_enable_o = 1'b0;
+    end
+    else begin : gen_bingo_hw_manager_task_queue_master
+        // AXI Lite Master Task Queue
+        // The Hw Manager issues the read request to the address specified by the host via the following inputs
+        // Hence this is a master AXI Lite interface
+        bingo_hw_manager_task_queue_master #(
+            .TaskQueueDepth               (TaskQueueDepth               ),
+            .TaskIdWidth                  (TaskIdWidth                  ),
+            .req_lite_t                   (host_axi_lite_req_t          ),
+            .resp_lite_t                  (host_axi_lite_resp_t         ),
+            .addr_t                       (host_axi_lite_addr_t         ),
+            .data_t                       (host_axi_lite_data_t         )
+        ) i_bingo_hw_manager_task_queue_master (
+            .clk_i                     (clk_i                                ),
+            .rst_ni                    (rst_ni                               ),
+            .start_i                   (bingo_hw_manager_start_i             ),
+            .reset_start_o             (bingo_hw_manager_reset_start_o       ),
+            .reset_start_enable_o      (bingo_hw_manager_reset_start_en_o    ),
+            .task_list_base_addr_i     (task_list_base_addr_i                ),
+            .num_task_i                (num_task_i                           ),
+            .axi_lite_req_o            (task_queue_axi_lite_req_o            ),
+            .axi_lite_resp_i           (task_queue_axi_lite_resp_i           ),
+            .task_queue_data_o         (task_queue_mbox_data                 ),
+            .task_queue_pop_i          (task_queue_mbox_pop                  ),
+            .task_queue_empty_o        (task_queue_mbox_empty                )
+        );
+        // Tie off the unused slave interface signals
+        assign task_queue_axi_lite_resp_o = '0;
+    end
     assign task_queue_mbox_pop = stream_demux_core_type_inp_ready && !task_queue_mbox_empty;
     // Compose the current task descriptor
     assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(task_queue_mbox_data);
@@ -756,7 +802,7 @@ module bingo_hw_manager_top #(
             assign ready_queue_filter_drop[core][cluster] = (waiting_dep_check_task_desc[core].task_type) && 
                                                                         (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1);
             assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
-            if (READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin: gen_ready_queue_axi_lite_mailbox                               
+            if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_ready_queue_axi_lite_mailbox                               
                 bingo_hw_manager_read_mailbox #(
                     .MailboxDepth(ReadyQueueDepth                ),
                     .IrqEdgeTrig (1'b0                           ),
@@ -887,7 +933,7 @@ module bingo_hw_manager_top #(
     // This is the done queue interface
     // Device will writes completed tasks info to this queue via 32bit AXI Lite
     // The information contains task ID, cluster id and core id
-    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin: gen_done_queue_axi_lite_mailbox
+    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_done_queue_axi_lite_mailbox
         bingo_hw_manager_write_mailbox #(
             .MailboxDepth(DoneQueueDepth               ),
             .IrqEdgeTrig (1'b0                         ),
@@ -945,7 +991,7 @@ module bingo_hw_manager_top #(
                                  (stream_arbiter_dep_matrix_set_inp_ready[cur_done_queue_info.assigned_core_id + cur_done_queue_info.assigned_cluster_id * NUM_CORES_PER_CLUSTER]);
 
     // For generic FIFO done queue, we need to connect the CSR interface signals
-    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_csr_to_fifo_intf
+    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==1) begin: gen_csr_to_fifo_intf
         localparam N_CORES_TOTAL = NUM_CLUSTERS_PER_CHIPLET * NUM_CORES_PER_CLUSTER;
         // 1D CSR Requests
         csr_req_t [N_CORES_TOTAL-1:0] csr_req_1d;

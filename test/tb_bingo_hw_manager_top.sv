@@ -18,7 +18,8 @@ module tb_bingo_hw_manager_top;
     // ---------------------------------------------------------------------------
     // Local configuration
     // ---------------------------------------------------------------------------
-    localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 0; // 1: AXI Lite 0: CSR Req/Resp
+    localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1; // 1: CSR Req/Resp 0: Default AXi Lite Slave
+    localparam int unsigned TASK_QUEUE_TYPE = 0;                     // 1: AXI Lite Master 0: AXI Lite Slave
     localparam int unsigned NUM_CHIPLET = 4;
     localparam int unsigned NUM_CLUSTERS_PER_CHIPLET = 2;
     localparam int unsigned NUM_CORES_PER_CLUSTER    = 3;
@@ -47,17 +48,17 @@ module tb_bingo_hw_manager_top;
     // Task Type
     // 0: Normal Task
     // 1: Dummy Task
-    typedef logic                                        bingo_hw_manager_task_type_t;
+    typedef logic                                                        bingo_hw_manager_task_type_t;
     // Task ID
-    typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
+    typedef logic [TaskIdWidth-1:0                     ]                 bingo_hw_manager_task_id_t;
     // Assigned Chiplet ID
-    typedef logic [ChipIdWidth-1:0                     ] bingo_hw_manager_assigned_chiplet_id_t;
+    typedef logic [ChipIdWidth-1:0                     ]                 bingo_hw_manager_assigned_chiplet_id_t;
     // Assigned Cluster ID
-    typedef logic [$clog2(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
+    typedef logic [cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
     // Assigned Core ID
-    typedef logic [$clog2(NUM_CORES_PER_CLUSTER)-1:0   ] bingo_hw_manager_assigned_core_id_t;
+    typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0   ] bingo_hw_manager_assigned_core_id_t;
     // Dependency check info struct
-    typedef logic [NUM_CORES_PER_CLUSTER-1:0]            bingo_hw_manager_dep_code_t;
+    typedef logic [NUM_CORES_PER_CLUSTER-1:0]                            bingo_hw_manager_dep_code_t;
     typedef struct packed{
         bingo_hw_manager_dep_code_t                  dep_check_code;
         logic                                        dep_check_en;
@@ -446,7 +447,7 @@ module tb_bingo_hw_manager_top;
   for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_dut
     bingo_hw_manager_top #(
       .READY_AND_DONE_QUEUE_INTERFACE_TYPE(READY_AND_DONE_QUEUE_INTERFACE_TYPE),
-      .NUM_CHIPLET              (NUM_CHIPLET              ),
+      .TASK_QUEUE_TYPE          (TASK_QUEUE_TYPE          ),
       .NUM_CORES_PER_CLUSTER    (NUM_CORES_PER_CLUSTER    ),
       .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET ),
       .HostAxiLiteAddrWidth     (HOST_AW                  ),
@@ -466,6 +467,13 @@ module tb_bingo_hw_manager_top;
       .task_queue_base_addr_i             ({chip_id[chiplet_idx],TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}     ),
       .task_queue_axi_lite_req_i          (local_task_queue_req[chiplet_idx]                                   ),
       .task_queue_axi_lite_resp_o         (local_task_queue_resp[chiplet_idx]                                  ),
+      .task_list_base_addr_i              ('0                                                                  ),
+      .num_task_i                         ('0                                                                  ),
+      .bingo_hw_manager_start_i           ('0                                                                  ),
+      .bingo_hw_manager_reset_start_o     (/* not used */                                                      ),
+      .bingo_hw_manager_reset_start_en_o  (/* not used */                                                      ),
+      .task_queue_axi_lite_req_o          (/* not used */                                                      ),
+      .task_queue_axi_lite_resp_i         ('0                                                                  ),
       .chiplet_mailbox_base_addr_i        ({chip_id[chiplet_idx],H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
       .to_remote_chiplet_axi_lite_req_o   (h2h_axi_lite_xbar_in_req[chiplet_idx]                               ),
       .to_remote_chiplet_axi_lite_resp_i  (h2h_axi_lite_xbar_in_resp[chiplet_idx]                              ),
@@ -1058,7 +1066,7 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pa
     status_addr[DEV_AW-ChipIdWidth-1:0] = READY_QUEUE_BASE + device_axi_lite_addr_t'((core_id + cluster_id * NUM_CORES_PER_CLUSTER) * READY_QUEUE_STRIDE) + 32'd8;
     $display("%0t Chip%0d READY[Core%0d, Cluster%0d] worker started, idx %0d", $time, chip_id, core_id, cluster_id, idx);
     forever begin
-      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin
+      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin
         // AXI Lite Read
         ready_queue_master[idx].read(status_addr, '0, status, resp);
         repeat (5) @(posedge clk_i);
@@ -1093,7 +1101,7 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_cluster0_core0_gemm_2_1 = pa
       done_info.assigned_core_id     = bingo_hw_manager_assigned_core_id_t'(core_id);
       done_info.reserved_bits = '0;
       done_payload = device_axi_lite_data_t'(done_info);
-      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE) begin
+      if(READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin
       // Acquire the lock for the done queue
       wait (!done_queue_lock[chip_id]); // Wait until the lock is free
       done_queue_lock[chip_id] = 1'b1;  // Acquire the lock
@@ -1132,32 +1140,6 @@ initial begin : ready_queue_pollers
         end
       end
     end
-    // fork
-    //   core_worker(0, 0, 0);
-    //   core_worker(0, 0, 1);
-    //   core_worker(0, 0, 2);
-    //   core_worker(0, 1, 0);
-    //   core_worker(0, 1, 1);
-    //   core_worker(0, 1, 2);
-    //   core_worker(1, 0, 0);
-    //   core_worker(1, 0, 1);
-    //   core_worker(1, 0, 2);
-    //   core_worker(1, 1, 0);
-    //   core_worker(1, 1, 1);
-    //   core_worker(1, 1, 2);
-    //   core_worker(2, 0, 0);
-    //   core_worker(2, 0, 1);
-    //   core_worker(2, 0, 2);
-    //   core_worker(2, 1, 0);
-    //   core_worker(2, 1, 1);
-    //   core_worker(2, 1, 2);
-    //   core_worker(3, 0, 0);
-    //   core_worker(3, 0, 1);
-    //   core_worker(3, 0, 2);
-    //   core_worker(3, 1, 0);
-    //   core_worker(3, 1, 1);
-    //   core_worker(3, 1, 2);
-    // join_none
   end
 
 

@@ -145,7 +145,7 @@ module bingo_hw_manager_task_queue_master #(
                 task_counter_clear = 1'b0;                
             end
             SEND_AR: begin
-                task_queue_axi_lite_req_o.ar.addr = task_list_base_addr_i + (task_counter_q * $size(data_t)'/8);
+                task_queue_axi_lite_req_o.ar.addr = task_list_base_addr_i + (task_counter_q * $size(data_t)/8);
                 task_queue_axi_lite_req_o.ar.prot = 3'b000;
                 task_queue_axi_lite_req_o.ar_valid = 1'b1;
                 task_counter_en = task_queue_axi_lite_req_o.ar_valid && task_queue_axi_lite_resp_i.ar_ready;

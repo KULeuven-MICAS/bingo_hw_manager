@@ -455,13 +455,13 @@ module bingo_hw_manager_top #(
         ) i_bingo_hw_manager_task_queue_master (
             .clk_i                     (clk_i                                ),
             .rst_ni                    (rst_ni                               ),
-            .start_i                   (bingo_hw_manager_start_i             ),
-            .reset_start_o             (bingo_hw_manager_reset_start_o       ),
-            .reset_start_enable_o      (bingo_hw_manager_reset_start_en_o    ),
             .task_list_base_addr_i     (task_list_base_addr_i                ),
             .num_task_i                (num_task_i                           ),
-            .axi_lite_req_o            (task_queue_axi_lite_req_o            ),
-            .axi_lite_resp_i           (task_queue_axi_lite_resp_i           ),
+            .start_i                   (bingo_hw_manager_start_i             ),
+            .reset_start_o             (bingo_hw_manager_reset_start_o       ),
+            .reset_start_en_o          (bingo_hw_manager_reset_start_en_o    ),
+            .task_queue_axi_lite_req_o (task_queue_axi_lite_req_o            ),
+            .task_queue_axi_lite_resp_i(task_queue_axi_lite_resp_i           ),
             .task_queue_data_o         (task_queue_mbox_data                 ),
             .task_queue_pop_i          (task_queue_mbox_pop                  ),
             .task_queue_empty_o        (task_queue_mbox_empty                )

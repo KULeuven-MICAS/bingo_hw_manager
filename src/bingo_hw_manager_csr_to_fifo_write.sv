@@ -11,8 +11,6 @@ module bingo_hw_manager_csr_to_fifo_write #(
     input  data_t           csr_req_data_i,
     input  logic            csr_req_valid_i,
     output logic            csr_req_ready_o,
-    // CSR rsp
-    output logic            csr_rsp_valid_o,
     // FIFO interface
     output data_t           fifo_data_o,
     output logic            fifo_data_valid_o,

@@ -1014,10 +1014,14 @@ module bingo_hw_manager_top #(
 
 
         bingo_hw_manager_csr_to_fifo #(
+            .TaskIdWidth (TaskIdWidth),
             .N (N_CORES_TOTAL),
+            .NUM_CORES_PER_CLUSTER (NUM_CORES_PER_CLUSTER),
+            .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET),
             .csr_req_t (csr_req_t),
             .csr_rsp_t (csr_rsp_t),
-            .data_t    (device_axi_lite_data_t)
+            .data_t    (device_axi_lite_data_t),
+            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t)
         ) i_bingo_hw_manager_csr_to_fifo (
             .csr_req_i         (csr_req_1d               ),
             .csr_req_valid_i   (csr_req_valid_1d         ),

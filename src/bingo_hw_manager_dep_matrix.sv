@@ -35,7 +35,13 @@ module bingo_hw_manager_dep_matrix #(
             if (dep_set_valid_i[c]) begin
                 // Write column 'c' with the per-row bits from dep_set_code_i[c]
                 for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
-                    dep_matrix_d[r][c] = dep_set_code_i[c][r];
+                    // Accumulate dependencies using bitwise OR.
+                    // New '1's set the bit, while '0's preserve the existing state.
+                    // This prevents overwriting existing dependencies with '0's from later updates.
+                    // For example a normal node followed by a dummy set
+                    // The normal node set [1 0 0], the dummy set [0 1 0]
+                    // The final result should be [1 1 0]
+                    dep_matrix_d[r][c] = dep_matrix_d[r][c] | dep_set_code_i[c][r];
                 end
             end
         end

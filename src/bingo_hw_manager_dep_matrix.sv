@@ -54,7 +54,11 @@ module bingo_hw_manager_dep_matrix #(
         end else begin
             for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
                 if (dep_matrix_clear_row[r]) begin
-                    dep_matrix_q[r] <= '0;
+                    // Only clear the bits that were checked (and thus satisfied)
+                    // We keep the other dependencies that are set but not requested this time.
+                    // For example if current row is [1 1 1] and check code is [1 0 1]
+                    // The result row will be [0 1 0]
+                    dep_matrix_q[r] <= dep_matrix_d[r] & ~dep_check_code_i[r];
                 end else begin
                     dep_matrix_q[r] <= dep_matrix_d[r];
                 end
@@ -67,7 +71,12 @@ module bingo_hw_manager_dep_matrix #(
         dep_check_result_o = '0;
         for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
             if (dep_check_valid_i[r]) begin
-                dep_check_result_o[r] = (dep_matrix_q[r] == dep_check_code_i[r]);
+                // Check if the required bits are set.
+                // Instead of strict equality check, we check if the requested bits are present in the matrix row.
+                // (dep_matrix_q[r] & dep_check_code_i[r]) masks out the non-interested bits in the matrix.
+                // If the result equal to dep_check_code_i[r], it means all required dependencies are satisfied.
+                // e.g. matrix=[1 1 1], check=[1 0 1] -> (matrix & check) = [1 0 1] == check -> satisfied
+                dep_check_result_o[r] = ((dep_matrix_q[r] & dep_check_code_i[r]) == dep_check_code_i[r]);
             end
         end
     end

@@ -34,6 +34,7 @@ module bingo_hw_manager_task_queue_master #(
     typedef enum logic [1:0]{
         IDLE,
         SEND_AR,
+        WAIT_R,
         FINISH
     } task_queue_master_fsm_t;    
     task_queue_master_fsm_t cur_state, next_state;
@@ -112,6 +113,11 @@ module bingo_hw_manager_task_queue_master #(
             end
             SEND_AR: begin
                 if (task_queue_axi_lite_req_o.ar_valid && task_queue_axi_lite_resp_i.ar_ready) begin
+                    next_state = WAIT_R;
+                end
+            end
+            WAIT_R: begin
+                if (task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready) begin
                     if (task_counter_q == (num_task_i - 1)) begin
                         next_state = FINISH;
                     end else begin
@@ -148,10 +154,13 @@ module bingo_hw_manager_task_queue_master #(
                 task_queue_axi_lite_req_o.ar.addr = task_list_base_addr_i + (task_counter_q * $size(data_t)/8);
                 task_queue_axi_lite_req_o.ar.prot = 3'b000;
                 task_queue_axi_lite_req_o.ar_valid = 1'b1;
-                task_counter_en = task_queue_axi_lite_req_o.ar_valid && task_queue_axi_lite_resp_i.ar_ready;
+                task_counter_en = 1'b0;
                 task_counter_clear = 1'b0;
                 reset_start_o = '0;
                 reset_start_en_o = 1'b0;
+            end
+            WAIT_R: begin
+                task_counter_en = task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready;
             end
             FINISH: begin
                 task_queue_axi_lite_req_o.ar = '0;

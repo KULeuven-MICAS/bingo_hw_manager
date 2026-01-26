@@ -1,7 +1,12 @@
+// Copyright 2025 KU Leuven.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+
 // Authors:
 // - Fanchen Kong <fanchen.kong@kuleuven.be>
 // - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
+
 module bingo_hw_manager_top #(
     // Top-level parameters can be defined here
     parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1, // 1: CSR Req/Resp 0: Default AXi Lite Slave

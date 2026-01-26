@@ -2,7 +2,11 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Author: Fanchen Kong <fanchen.kong@kuleuven.be>
+// Authors:
+// - Fanchen Kong <fanchen.kong@kuleuven.be>
+// - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
+// - Yunhao Deng  <yunhao.deng@kuleuven.be>
+
 // This module is taken from the axi_lite_mailbox_slave.sv from the PULP AXI IP repository.
 // In our hw manager, we only need one side to be writen 
 `include "common_cells/registers.svh"

@@ -1,7 +1,12 @@
+// Copyright 2025 KU Leuven.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+
 // Authors:
 // - Fanchen Kong <fanchen.kong@kuleuven.be>
 // - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
+
 
 // This module is the interface from the core CSR req/rsp to write the FIFO
 module bingo_hw_manager_csr_to_fifo_write #(

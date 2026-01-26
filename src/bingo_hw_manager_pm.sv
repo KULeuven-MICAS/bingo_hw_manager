@@ -191,7 +191,7 @@ module bingo_hw_manager_pm #(
         state_d = state_q; // Default to hold state
         case (state_q)
             IDLE: begin
-                if (update_req_valid) state_d = WRITE_FREQ_AW;
+                if (update_req_valid && enable_idle_pm_i[0]) state_d = WRITE_FREQ_AW;
             end
 
             WRITE_FREQ_AW: begin

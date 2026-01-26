@@ -22,25 +22,42 @@ module bingo_hw_manager_dep_matrix #(
     output logic              [DEP_MATRIX_ROWS-1:0] dep_check_result_o,
     // Column set interface
     input  logic              [DEP_MATRIX_COLS-1:0] dep_set_valid_i,
+    output logic              [DEP_MATRIX_COLS-1:0] dep_set_ready_o,
     input  dep_set_code_t     [DEP_MATRIX_COLS-1:0] dep_set_code_i
 );
     // dependency matrix: dep_matrix_q[row][col]
     logic [DEP_MATRIX_ROWS-1:0][DEP_MATRIX_COLS-1:0] dep_matrix_d, dep_matrix_q;
     logic [DEP_MATRIX_ROWS-1:0]                      dep_matrix_clear_row;
 
+    // Generate ready signal based on overlap check
+    // If the bit to be set is already 1 in the matrix, ready is low.
+    logic [DEP_MATRIX_COLS-1:0] overlap_find;
+    always_comb begin
+        overlap_find = '0;
+        dep_set_ready_o = '1; // Default to ready
+        for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
+            for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
+                // Check for overlap: current state is 1 AND new set bit is 1
+                if (!overlap_find[c] && dep_set_valid_i[c] && dep_matrix_q[r][c] && dep_set_code_i[c][r]) begin
+                    overlap_find[c] = 1'b1;
+                end
+            end
+            dep_set_ready_o[c] = ~overlap_find[c];
+        end
+    end
+
     // Compute next-state with per-column write
     always_comb begin
         dep_matrix_d = dep_matrix_q;
         for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
-            if (dep_set_valid_i[c]) begin
+            // Perform update only if Valid and Ready (no overlap)
+            if (dep_set_valid_i[c] && dep_set_ready_o[c]) begin
                 // Write column 'c' with the per-row bits from dep_set_code_i[c]
                 for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
                     // Accumulate dependencies using bitwise OR.
                     // New '1's set the bit, while '0's preserve the existing state.
                     // This prevents overwriting existing dependencies with '0's from later updates.
-                    // For example a normal node followed by a dummy set
-                    // The normal node set [1 0 0], the dummy set [0 1 0]
-                    // The final result should be [1 1 0]
+                    // The ready signal ensures we don't 'double set' an existing '1'.
                     dep_matrix_d[r][c] = dep_matrix_d[r][c] | dep_set_code_i[c][r];
                 end
             end

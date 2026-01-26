@@ -310,6 +310,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]            dep_check_result;
     dep_check_code_t [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0] dep_check_code;
     logic [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]            dep_set_valid;
+    logic [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]            dep_set_ready;
     dep_set_code_t [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0]   dep_set_code;
 
     ///////////////////////////////////////
@@ -680,6 +681,7 @@ module bingo_hw_manager_top #(
             .dep_check_code_i  (dep_check_code[cluster]  ),
             .dep_check_result_o(dep_check_result[cluster]),
             .dep_set_valid_i   (dep_set_valid[cluster]   ),
+            .dep_set_ready_o   (dep_set_ready[cluster]   ),
             .dep_set_code_i    (dep_set_code[cluster]    )
         );
     end
@@ -768,14 +770,13 @@ module bingo_hw_manager_top #(
         assign stream_demux_set_dep_matrix_cluster_id_oup_ready[cluster] = stream_demux_set_dep_matrix_core_id_inp_ready[cluster];
         assign stream_demux_set_dep_matrix_core_id_inp_valid[cluster] = stream_demux_set_dep_matrix_cluster_id_oup_valid[cluster];
         assign stream_demux_set_dep_matrix_core_id_oup_sel[cluster] = stream_arbiter_dep_matrix_set_oup_data.dep_matrix_col;
-        // The Dep Matrix Set does not have ready signal
-        assign stream_demux_set_dep_matrix_core_id_oup_ready[cluster] = stream_demux_set_dep_matrix_core_id_oup_valid[cluster]; 
     end
 
     always_comb begin : connect_dep_set_for_dep_matrix
         for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
             for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
                 dep_set_valid[cluster][core] = stream_demux_set_dep_matrix_core_id_oup_valid[cluster][core];
+                stream_demux_set_dep_matrix_core_id_oup_ready[cluster][core] = dep_set_ready[cluster][core];
                 dep_set_code[cluster][core] = stream_arbiter_dep_matrix_set_oup_data.dep_set_code;
             end
         end        

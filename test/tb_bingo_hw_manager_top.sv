@@ -490,7 +490,14 @@ module tb_bingo_hw_manager_top;
       .csr_req_ready_o                    (csr_req_ready[chiplet_idx]                                          ),
       .csr_rsp_o                          (csr_resp[chiplet_idx]                                               ),
       .csr_rsp_valid_o                    (csr_resp_valid[chiplet_idx]                                         ),
-      .csr_rsp_ready_i                    (csr_resp_ready[chiplet_idx]                                         )
+      .csr_rsp_ready_i                    (csr_resp_ready[chiplet_idx]                                         ),
+      .enable_idle_pm_i                   ('0                                                                  ),
+      .idle_power_level_i                 ('0                                                                  ),
+      .normal_power_level_i               ('0                                                                  ),
+      .pm_base_addr_i                     ('0                                                                  ),
+      .core_power_domain_i                ('0                                                                  ),
+      .pm_axi_lite_req_o                  (/* not used */                                                      ),
+      .pm_axi_lite_resp_i                 ('0                                                                  )
     );
   end
   // ---------------------------------------------------------------------------

@@ -71,37 +71,47 @@ module bingo_hw_manager_top #(
     output logic                                bingo_hw_manager_reset_start_en_o,
     output host_axi_lite_req_t                  task_queue_axi_lite_req_o,
     input  host_axi_lite_resp_t                 task_queue_axi_lite_resp_i,
-    // The chiplet set interface to other chiplets
+    /// The chiplet set interface to other chiplets
     // HW Manager -----> Other chiplets
     input  host_axi_lite_addr_t                 chiplet_mailbox_base_addr_i,
     output host_axi_lite_req_t                  to_remote_chiplet_axi_lite_req_o,
     input  host_axi_lite_resp_t                 to_remote_chiplet_axi_lite_resp_i,
-    // The chiplet done interface from other chiplets
+    /// The chiplet done interface from other chiplets
     input  host_axi_lite_req_t                  from_remote_axi_lite_req_i,
     output host_axi_lite_resp_t                 from_remote_axi_lite_resp_o,
-    // The done queue interface to the devices
+    /// The done queue interface to the devices
     // Devices -----> Done Queue
     // Here this queue holds all the completed tasks info from the devices
     // The device cores will write completed tasks into this queue via 32bit AXI Lite
     input  device_axi_lite_addr_t               done_queue_base_addr_i,
     input  device_axi_lite_req_t                done_queue_axi_lite_req_i,
     output device_axi_lite_resp_t               done_queue_axi_lite_resp_o,
-    // The ready queue interface to the devices
+    /// The ready queue interface to the devices
     // HW scheduler -----> Ready Queue
     // Here the ready queue holds the tasks that are ready to be executed by the devices
     // The device cores will read tasks from this queue via 32bit AXI Lite
     // Each core has its own ready queue interface
-    input  device_axi_lite_addr_t                ready_queue_base_addr_i,
-    input  device_axi_lite_req_t             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_req_i,
-    output device_axi_lite_resp_t            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_resp_o,
-    // CSR Req/Resp Interface for ready queue and the done queue
+    input  device_axi_lite_addr_t               ready_queue_base_addr_i,
+    input  device_axi_lite_req_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_req_i,
+    output device_axi_lite_resp_t               [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_resp_o,
+    /// CSR Req/Resp Interface for ready queue and the done queue
     // CSR Will Read from the ready queue and write to the done queue
-    input  csr_req_t                         [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_i,
-    input  logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_valid_i,
-    output logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_ready_o,
-    output csr_rsp_t                         [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_o,
-    output logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_valid_o,
-    input  logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_ready_i
+    input  csr_req_t                            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_i,
+    input  logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_valid_i,
+    output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_ready_o,
+    output csr_rsp_t                            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_o,
+    output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_valid_o,
+    input  logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_ready_i,
+    /// The interface to the Power Management Module
+    // Host configuration interface
+    input device_axi_lite_data_t                enable_idle_pm_i,
+    input device_axi_lite_data_t                idle_power_level_i,
+    input device_axi_lite_data_t                normal_power_level_i,
+    input device_axi_lite_addr_t                pm_base_addr_i,
+    input device_axi_lite_data_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_power_domain_i,
+    // AXI Lite Master Interface
+    output host_axi_lite_req_t                  pm_axi_lite_req_o,
+    input  host_axi_lite_resp_t                 pm_axi_lite_resp_i
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
@@ -410,6 +420,10 @@ module bingo_hw_manager_top #(
     device_axi_lite_data_t               done_queue_mbox_data_in;
     logic                                done_queue_mbox_push;
     logic                                done_queue_mbox_full;
+    ///////////////////////////////////////
+    // PM signals
+    ///////////////////////////////////////
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -832,6 +846,11 @@ module bingo_hw_manager_top #(
                     .mbox_full_o (ready_queue_full[core][cluster]                              ),
                     .mbox_flush_i(1'b0                                                         )
                 );
+                // Connect to the core_status_waiting_task
+                // This signal indicates whether the core is waiting for a task to be read from the ready queue
+                // If ar_valid is high and r_ready is low, it means the core is waiting for a task
+                assign core_status_waiting_task[core][cluster] = ready_queue_axi_lite_req_i[core][cluster].ar_valid && 
+                                                                !ready_queue_axi_lite_req_i[core][cluster].r_ready;
                 // Tie off the generic fifo read signals
                 assign ready_queue_pop[core][cluster] = 1'b0;
                 assign ready_queue_empty[core][cluster] = 1'b0;
@@ -854,6 +873,7 @@ module bingo_hw_manager_top #(
                     .data_o      ( ready_queue_data_out[core][cluster]    ),
                     .pop_i       ( ready_queue_pop[core][cluster]         )
                 );
+                // Connect to the core_status_waiting_task
                 // Since we do not have the axi lite interface, we tie off the ready queue axi lite resp signals
                 assign ready_queue_axi_lite_resp_o[core][cluster] = '0;
             end
@@ -1059,6 +1079,18 @@ module bingo_hw_manager_top #(
                 end
             end
         end
+        // Connect to the core_status_waiting_task
+        // This signal indicates whether the core is waiting for a task to be read from the ready queue
+        // If csr_req_i.write==0 and csr_req_valid_i is high and csr_req_ready_o is low, it means the core is waiting for a task
+        always_comb begin : connect_core_status_waiting_task_signals
+            for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+                for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+                    core_status_waiting_task[core][cluster] = (csr_req_i[core][cluster].write == 1'b0) &&
+                                                              csr_req_valid_i[core][cluster] &&
+                                                              !csr_req_ready_o[core][cluster];
+                end
+            end
+        end
 
         // For the Done Queue, we need a arbiter to arbitrate the write requests from all cores to one done queue
         stream_arbiter #(
@@ -1088,6 +1120,32 @@ module bingo_hw_manager_top #(
         assign csr_rsp_valid_o = '0;
     end
 
+    //////////////////////////////////////////////////////////////////////
+    // Power Manager
+    //////////////////////////////////////////////////////////////////////
+    bingo_hw_manager_pm #(
+        .NUM_CLUSTERS_PER_CHIPLET ( NUM_CLUSTERS_PER_CHIPLET          ),
+        .NUM_CORES_PER_CLUSTER    ( NUM_CORES_PER_CLUSTER             ),
+        .CfgBusWidth              ( DeviceAxiLiteDataWidth            ),
+        .req_lite_t               ( host_axi_lite_req_t               ),
+        .resp_lite_t              ( host_axi_lite_resp_t              ),
+        .addr_t                   ( host_axi_lite_addr_t              ),
+        .data_t                   ( host_axi_lite_data_t              )
+    ) i_bingo_hw_manager_pm (
+        .clk_i                 ( clk_i                                 ),
+        .rst_ni                ( rst_ni                                ),
+        // Configuration from the host
+        .enable_idle_pm_i      ( enable_idle_pm_i                      ),
+        .idle_power_level_i    ( idle_power_level_i                    ),
+        .normal_power_level_i  ( normal_power_level_i                  ),
+        .pm_base_addr_i        ( pm_base_addr_i                        ),
+        .core_power_domain_i   ( core_power_domain_i                   ),
+        // Internal Core status
+        .core_status_waiting_task_i ( core_status_waiting_task         ),
+        // Interface to Host AXI Lite
+        .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
+        .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
+    );
 
 
 endmodule

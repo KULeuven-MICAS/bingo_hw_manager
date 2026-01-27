@@ -104,11 +104,11 @@ module bingo_hw_manager_top #(
     input  logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_ready_i,
     /// The interface to the Power Management Module
     // Host configuration interface
-    input device_axi_lite_data_t                enable_idle_pm_i,
-    input device_axi_lite_data_t                idle_power_level_i,
-    input device_axi_lite_data_t                normal_power_level_i,
-    input device_axi_lite_addr_t                pm_base_addr_i,
-    input device_axi_lite_data_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_power_domain_i,
+    input device_axi_lite_data_t                bingo_hw_manager_enable_idle_pm_i,
+    input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
+    input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
+    input device_axi_lite_addr_t                bingo_hw_manager_pm_base_addr_i,
+    input device_axi_lite_data_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    bingo_hw_manager_core_power_domain_i,
     // AXI Lite Master Interface
     output host_axi_lite_req_t                  pm_axi_lite_req_o,
     input  host_axi_lite_resp_t                 pm_axi_lite_resp_i
@@ -1135,11 +1135,11 @@ module bingo_hw_manager_top #(
         .clk_i                 ( clk_i                                 ),
         .rst_ni                ( rst_ni                                ),
         // Configuration from the host
-        .enable_idle_pm_i      ( enable_idle_pm_i                      ),
-        .idle_power_level_i    ( idle_power_level_i                    ),
-        .normal_power_level_i  ( normal_power_level_i                  ),
-        .pm_base_addr_i        ( pm_base_addr_i                        ),
-        .core_power_domain_i   ( core_power_domain_i                   ),
+        .enable_idle_pm_i      ( bingo_hw_manager_enable_idle_pm_i      ),
+        .idle_power_level_i    ( bingo_hw_manager_idle_power_level_i    ),
+        .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
+        .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
+        .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
         // Internal Core status
         .core_status_waiting_task_i ( core_status_waiting_task         ),
         // Interface to Host AXI Lite

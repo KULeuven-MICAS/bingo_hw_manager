@@ -89,10 +89,14 @@ module bingo_hw_manager_pm #(
         domain_id = '0;
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                domain_id[core][cluster] = core_power_domain_i[core][cluster][4:0];
-                domain_active_mask[domain_id[core][cluster]] = 1'b1;
-                if (core_status_waiting_task_i[core][cluster] == 1'b0) begin
-                    domain_all_idle[domain_id[core][cluster]] = 1'b0;
+                // We also support the case where some cores are not mapped to any power domain
+                // Set to a magic number like 99 to indicate no power domain
+                if (core_power_domain_i[core][cluster] < MAX_DOMAINS) begin
+                    domain_id[core][cluster] = core_power_domain_i[core][cluster][4:0];
+                    domain_active_mask[domain_id[core][cluster]] = 1'b1;
+                    if (core_status_waiting_task_i[core][cluster] == 1'b0) begin
+                        domain_all_idle[domain_id[core][cluster]] = 1'b0;
+                    end
                 end
             end
         end
@@ -104,7 +108,6 @@ module bingo_hw_manager_pm #(
     power_level_t [MAX_DOMAINS-1:0] current_power_level_q; // State tracking
     power_level_t [MAX_DOMAINS-1:0] target_power_level;
     logic [MAX_DOMAINS-1:0]         pending_update;       // Domains that need update
-    logic [MAX_DOMAINS-1:0]         arb_grant;            // One-hot grant
     logic                           update_req_valid;
     domain_id_t                     update_domain_id;
     power_level_t                   update_domain_target_level;
@@ -253,22 +256,26 @@ module bingo_hw_manager_pm #(
             end
 
             WRITE_FREQ_W: begin
-                // C Code Reference:
-                // uint32_t shift = (domain % 4) * 8;
-                // *reg = (division & 0xFF) << shift;
-                //
-                // Verilog Implementation:
-                // - active_domain_id_q[1:0] implements (domain % 4)
-                // - Shift logic places the 8-bit level into the correct byte lane.
-                // - WSTRB selects only that byte, avoiding the need for Read-Modify-Write (RMW).
-                //
-                // Example: active_domain_id_q = 5, target_level = 0xAA
-                // - 5 % 4 = 1.
-                // - Shift = 1 * 8 = 8 bits.
-                // - wdata = 0xAA << 8 = 0x0000AA00.
-                // - wstrb = 8'b00000001 << 1 = 8'b00000010 (Write to Byte 1).
-                bus_wdata = BUS_DATA'(active_target_level_q) << ((active_domain_id_q[1:0]) * 8);
-                bus_wstrb = WstrbWidth'(1'b1) << active_domain_id_q[1:0];
+                // Replicate 32-bit data to both halves of the 64-bit bus
+                // logic [31:0] wdata_32 = 32'(active_target_level_q) << (active_domain_id_q[1:0] * 8);
+                bus_wdata = {2{32'(active_target_level_q) << (active_domain_id_q[1:0] * 8)}};
+                // The base addr of the frequency division registers is 0x08
+                // Each domain requires 8bits within a 32-bit reg
+                // 0x08 - 0x0c covers domains 0-3 
+                // 0x0c - 0x10 covers domains 4-7
+                // and so on...
+                // Each time we need to issue a 64bit write to one of these registers
+                // Actully we are issuing write to 0x08 - 0x10 at once but need to control the strobe
+                // Hence we need to determine which 32bit half of the 64bit bus to use
+                // Bit 2 of active_domain_id_q (value 4) determines if we are 
+                // targeting the Upper or Lower word of the 64-bit data bus.
+                // - If active_domain_id_q[2] == 0: Use Lower 32 bits (Strobe 0x0F)
+                // - If active_domain_id_q[2] == 1: Use Upper 32 bits (Strobe 0xF0)
+                if (active_domain_id_q[2]) begin
+                    bus_wstrb = 8'hf0; // Upper 32 bits
+                end else begin
+                    bus_wstrb = 8'h0f; // Lower 32 bits
+                end
                 bus_w_valid  = 1'b1;
             end
 
@@ -278,8 +285,12 @@ module bingo_hw_manager_pm #(
             end
 
             WRITE_VALID_W: begin
-                bus_wdata = BUS_DATA'(1'b1) << active_domain_id_q;
-                bus_wstrb = '1;
+                // Replicate 32-bit data
+                bus_wdata = {2{32'(1'b1) << active_domain_id_q}};
+                // Valid register is at Offset 0x04 (Upper 32 bits)
+                // We are actully writes to the 0x00 to 0x08 range with the 64bit bus
+                // So the valid bits are always in the upper 32 bits
+                bus_wstrb = 8'hf0; 
                 bus_w_valid  = 1'b1;
             end
 

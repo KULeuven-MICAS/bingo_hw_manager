@@ -61,7 +61,6 @@ module bingo_hw_manager_csr_to_fifo #(
     // Signals for csr_to_fifo_write
     logic [N-1:0] csr_req_valid_write;
     logic [N-1:0] csr_req_ready_write;
-    logic [N-1:0] csr_rsp_valid_write;
 
     // Signals for Write Done Info
     bingo_hw_manager_done_info_full_t [N-1:0] done_info;

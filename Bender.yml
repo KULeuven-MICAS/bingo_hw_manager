@@ -32,3 +32,7 @@ sources:
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv
       - test/tb_bingo_hw_manager_top.sv
+
+  # NOTE: Generated test files in test/generated/ are NOT listed here.
+  # They are picked up automatically by compile_vsim.sh via shell glob.
+  # To regenerate: python3 scripts/run_all_tests.py --stress 50 --emit-sv

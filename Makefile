@@ -44,6 +44,23 @@ sim-%.log: compile.log
 sim_gui: $(TB_DIR)/${TB}.vsim.gui
 	$(TB_DIR)/${TB}.vsim.gui
 
+# Generate + simulate a DFG pattern (requires Python + codegen)
+test-pattern-%: compile.log
+	python3 scripts/gen_and_sim.py --pattern $* --output-dir test/generated/
+	export VSIM="$(VSIM)"; cd build && ../scripts/run_vsim.sh --random-seed bingo_hw_manager_$*
+
+# Run all DFG pattern tests
+test-all-patterns: compile.log
+	python3 scripts/run_all_tests.py
+
+# Run Python model unit tests
+test-model:
+	python3 -m pytest model/tests/ -v
+
+# Run cross-validation (Python model vs RTL)
+test-cross-validate:
+	python3 scripts/cross_validate.py
+
 VSIM_BENDER_TARGET = -t simulation
 VSIM_BENDER_TARGET += -t test
 

@@ -7,3 +7,7 @@ transcript
 work-vsim/
 tb/
 .vscode
+test/generated/
+test/results/
+dev_doc/
+model/__pycache__/

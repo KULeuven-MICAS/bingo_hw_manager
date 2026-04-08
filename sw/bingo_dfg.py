@@ -11,6 +11,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
     def __init__(self) -> None:
         super().__init__()
         self.id = 0
+        self._next_cerf_group = 0
     def bingo_add_node(self, node_obj: BingoNode) -> None:
         """Add a node to the DFG."""
 
@@ -19,25 +20,31 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         node_obj.node_id = self.id
         # Add the node to the graph and the lookup dictionaries
         self.add_node(node_obj)
-    def bingo_add_edge(self, from_node_obj: BingoNode, to_node_obj: BingoNode) -> None:
-        """Add an edge to the DFG using node objects."""
-        self.add_edge(from_node_obj, to_node_obj)
+    def bingo_add_edge(self, from_node_obj: BingoNode, to_node_obj: BingoNode, cond: bool = False) -> None:
+        """Add an edge to the DFG.
+
+        Args:
+            cond: If True, marks this as a conditional execution edge. The
+                  source node will be auto-promoted to a gating task and the
+                  destination will be conditionally gated during compilation.
+        """
+        self.add_edge(from_node_obj, to_node_obj, cond=cond)
 
     def bingo_insert_node_between(self, from_node_obj: BingoNode, to_node_obj: BingoNode, new_node_obj: BingoNode) -> None:
         """Insert a new node between two existing nodes in the DFG."""
-        # Ensure the edge exists between the two nodes
         if not self.has_edge(from_node_obj, to_node_obj):
             raise ValueError(f"No edge exists between {from_node_obj.node_name} and {to_node_obj.node_name}")
 
-        # Add the new node to the DFG
-        self.bingo_add_node(new_node_obj)
+        # Preserve edge attributes (e.g. cond) before removal
+        edge_data = dict(self[from_node_obj][to_node_obj])
 
-        # Remove the edge between the two existing nodes
+        self.bingo_add_node(new_node_obj)
         self.remove_edge(from_node_obj, to_node_obj)
 
-        # Add edges to connect the new node between the two existing nodes
+        # src → new_node: unconditional (dummy nodes must always execute)
         self.add_edge(from_node_obj, new_node_obj)
-        self.add_edge(new_node_obj, to_node_obj)
+        # new_node → dst: inherit original edge attributes
+        self.add_edge(new_node_obj, to_node_obj, **edge_data)
         
     def bingo_transform_dfg_add_dummy_set_nodes(self) -> None:
         """Transform the DFG to add dummy nodes."""
@@ -117,8 +124,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             if len(local_succ_list)>1:
                 # Now the local multiple successor case
                 # We need local_successors-1 dummy set nodes
-                print(f"Adding dummy set nodes for {cur_node.node_name} with local successors {[succ.node_name for succ in succs_list]}")
-                for i in range(len(succs_list)-1):
+                print(f"Adding dummy set nodes for {cur_node.node_name} with local successors {[succ.node_name for succ in local_succ_list]}")
+                for i in range(len(local_succ_list)-1):
                     dummy_set_node = BingoNode(
                         assigned_chiplet_id=cur_node.assigned_chiplet_id,
                         assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
@@ -127,14 +134,14 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     )
                     dummy_set_node.node_type = "dummy"
                     dummy_set_node.dep_set_enable = True
-                    dummy_set_node.dep_set_list = [succs_list[i].assigned_core_id]
-                    dummy_set_node.dep_set_cluster_id = succs_list[i].assigned_cluster_id
-                    dummy_set_node.dep_set_chiplet_id = succs_list[i].assigned_chiplet_id
+                    dummy_set_node.dep_set_list = [local_succ_list[i].assigned_core_id]
+                    dummy_set_node.dep_set_cluster_id = local_succ_list[i].assigned_cluster_id
+                    dummy_set_node.dep_set_chiplet_id = local_succ_list[i].assigned_chiplet_id
                     dummy_set_node.dep_check_enable = False
                     dummy_set_node.dep_check_list = []
                     dummy_set_node.remote_dep_set_all = False
                     # Add the dummy set node to the graph
-                    self.bingo_insert_node_between(cur_node, succs_list[i], dummy_set_node)
+                    self.bingo_insert_node_between(cur_node, local_succ_list[i], dummy_set_node)
                     
     def bingo_transform_dfg_add_dummy_check_nodes(self) -> None:
         '''Transform the DFG to add dummy check nodes.
@@ -233,11 +240,10 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     self.bingo_insert_node_between(pred, cur_node, dummy_check_node)
 
     def bingo_assign_normal_node_dep_check_info(self) -> None:
-        """Assign the dep check info for normal nodes."""
+        """Assign the dep check info for normal and gating nodes."""
         # Iterate over all nodes in the graph
         for cur_node in self.node_list:
-            # Check if the node's task_type is "normal"
-            if cur_node.node_type == "normal":
+            if cur_node.node_type in ("normal", "gating"):
                 # Find predecessors
                 # And not dummy check
                 preds = [
@@ -261,11 +267,10 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                           f"dep_check_enable=False")
 
     def bingo_assign_normal_node_dep_set_info(self) -> None:
-        """Assign the dep set info for normal nodes."""
+        """Assign the dep set info for normal and gating nodes."""
         # Iterate over all nodes in the graph
         for cur_node in self.node_list:
-           # Check if the node's task_type is "normal"
-           if cur_node.node_type == "normal":
+           if cur_node.node_type in ("normal", "gating"):
                 # Find succs
                 # And not dummy set
                 succs = [
@@ -286,6 +291,241 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     cur_node.remote_dep_set_all = False
                     cur_node.dep_set_cluster_id = 0
                     cur_node.dep_set_chiplet_id = 0
+    # ----------------------------------------------------------------
+    # DARTS Tier 1: Conditional Execution helpers
+    # ----------------------------------------------------------------
+    def bingo_annotate_conditional_subgraph(
+        self,
+        nodes: list,
+        group_id: int,
+        invert: bool = False,
+    ) -> None:
+        """Mark nodes as conditionally executable based on CERF group.
+
+        When the CERF group is INACTIVE (default), these tasks are skipped.
+        They still propagate dep_set signals but are never dispatched to a core.
+
+        Args:
+            nodes: List of BingoNode objects to annotate
+            group_id: CERF group index (0-15)
+            invert: If True, execute when group is INACTIVE (skip when active)
+        """
+        for node in nodes:
+            node.cond_exec_en = True
+            node.cond_exec_group_id = group_id
+            node.cond_exec_invert = invert
+
+    def bingo_add_gating_node(
+        self,
+        assigned_chiplet_id: int,
+        assigned_cluster_id: int,
+        assigned_core_id: int,
+        node_name: str = "gating",
+    ):
+        """Create and add a gating task node.
+
+        A gating task executes on a core (like a normal task) and on completion
+        writes CERF entries to activate conditional execution groups.
+        In the DFG, it has task_type='gating' (2'b10 in RTL).
+        """
+        node = BingoNode(
+            assigned_chiplet_id=assigned_chiplet_id,
+            assigned_cluster_id=assigned_cluster_id,
+            assigned_core_id=assigned_core_id,
+            node_name=node_name,
+        )
+        node.node_type = "gating"
+        self.bingo_add_node(node)
+        return node
+
+    def bingo_compile_conditional_regions(self) -> dict:
+        """Compile conditional edges into CERF group assignments.
+
+        Scans every edge for the ``cond`` attribute set by
+        ``bingo_add_edge(..., cond=True)``.  For each gating node (a node
+        with at least one outgoing conditional edge):
+
+        1. Collect the set of conditional targets.
+        2. Build an undirected subgraph of *unconditional* edges among those
+           targets and find connected components — targets connected by
+           unconditional edges share one CERF group.
+        3. Assign one CERF group per component and annotate the target nodes.
+        4. Promote the gating node to ``node_type="gating"`` and record its
+           ``cerf_write_groups``.
+
+        Must be called **before** the dummy-node transforms.
+
+        Returns:
+            dict mapping each conditionally-gated BingoNode to its CERF
+            group id.  Also stored in ``self._node_to_cerf_group``.
+        """
+        # -- Step 1: identify gating nodes and their conditional targets ------
+        gating_to_targets: dict[BingoNode, set[BingoNode]] = {}
+        for u, v, data in self.edges(data=True):
+            if data.get("cond", False):
+                gating_to_targets.setdefault(u, set()).add(v)
+
+        if not gating_to_targets:
+            self._node_to_cerf_group = {}
+            return {}
+
+        # -- WF1: Acyclicity (only checked when conditional edges exist) ------
+        if not nx.is_directed_acyclic_graph(self):
+            raise ValueError(
+                "Conditional DFG is not a DAG — it contains a cycle. "
+                "Well-formedness condition WF1 violated."
+            )
+
+        # -- WF2: validate single-gating-source per target --------------------
+        target_to_gating: dict[BingoNode, BingoNode] = {}
+        for gating_node, targets in gating_to_targets.items():
+            for t in targets:
+                if t in target_to_gating:
+                    raise ValueError(
+                        f"Node '{t.node_name}' is conditionally gated by both "
+                        f"'{target_to_gating[t].node_name}' and "
+                        f"'{gating_node.node_name}'.  Hardware supports only "
+                        f"one CERF group per task (WF2 violated)."
+                    )
+                target_to_gating[t] = gating_node
+
+        # -- WF5: gating precedence (each gating node is ancestor of targets) -
+        for gating_node, targets in gating_to_targets.items():
+            for t in targets:
+                if not nx.has_path(self, gating_node, t):
+                    raise ValueError(
+                        f"Gating node '{gating_node.node_name}' is not an "
+                        f"ancestor of conditional target '{t.node_name}'. "
+                        f"Well-formedness condition WF5 violated."
+                    )
+
+        # -- Step 3: per gating node — connected-component grouping -----------
+        #
+        # CERF group reuse: if all gating nodes are totally ordered
+        # (each is an ancestor of the next), their conditional targets
+        # execute at different times and can safely share group IDs.
+        # The clear-before-set protocol in the gating task ensures that
+        # stale group values from a previous layer are overwritten.
+        node_to_group: dict[BingoNode, int] = {}
+
+        gating_ordered = [
+            n for n in nx.topological_sort(self) if n in gating_to_targets
+        ]
+        reuse_groups = len(gating_ordered) > 1 and all(
+            nx.has_path(self, gating_ordered[i], gating_ordered[i + 1])
+            for i in range(len(gating_ordered) - 1)
+        )
+        pool_start = self._next_cerf_group
+
+        for gating_node in gating_ordered:
+            targets = gating_to_targets[gating_node]
+            gating_node.node_type = "gating"
+
+            # Reset group counter to pool start for reuse
+            if reuse_groups:
+                self._next_cerf_group = pool_start
+
+            # Build undirected graph of unconditional edges among targets
+            unc = nx.Graph()
+            unc.add_nodes_from(targets)
+            for t in targets:
+                for _, v, d in self.out_edges(t, data=True):
+                    if v in targets and not d.get("cond", False):
+                        unc.add_edge(t, v)
+                for u, _, d in self.in_edges(t, data=True):
+                    if u in targets and not d.get("cond", False):
+                        unc.add_edge(u, t)
+
+            # Sort components deterministically by lowest node_id so that
+            # expert_i always gets the same CERF group across reused layers.
+            components = sorted(
+                nx.connected_components(unc),
+                key=lambda c: min(n.node_id for n in c),
+            )
+
+            group_ids = []
+            for component in components:
+                gid = self._next_cerf_group
+                self._next_cerf_group += 1
+                if gid >= 16:
+                    hint = ("Sequential gating reuse is active — "
+                            "too many experts per layer."
+                            if reuse_groups else
+                            "Consider reducing experts or making "
+                            "gating nodes sequential for reuse.")
+                    raise ValueError(
+                        f"CERF group overflow: need group {gid} but "
+                        f"max is 15 (WF4 violated). {hint}"
+                    )
+                for node in component:
+                    node.cond_exec_en = True
+                    node.cond_exec_group_id = gid
+                    node.cond_exec_invert = False
+                    node_to_group[node] = gid
+                group_ids.append(gid)
+
+            gating_node.cerf_write_groups = sorted(set(
+                gating_node.cerf_write_groups + group_ids
+            ))
+
+        self._node_to_cerf_group = node_to_group
+        return node_to_group
+
+    def bingo_define_conditional_region(
+        self,
+        gating_node: BingoNode,
+        guarded_nodes: list,
+        group_per_node: bool = False,
+        invert: bool = False,
+    ) -> list[int]:
+        """Define a conditional execution region controlled by a gating task.
+
+        The gating_node is marked as type 'gating' (task_type=2 in RTL).
+        When it completes on a core, the hardware writes the assigned CERF
+        groups, causing guarded_nodes to either execute or be skipped.
+
+        Args:
+            gating_node:    The node whose completion activates the CERF groups.
+            guarded_nodes:  Nodes whose execution depends on the CERF state.
+            group_per_node: If True, each guarded node gets its own CERF group
+                            (MoE: each expert independently gated).
+                            If False, all guarded nodes share one CERF group
+                            (early exit: entire stage gated together).
+            invert:         If True, guarded nodes execute when group is INACTIVE.
+
+        Returns:
+            List of assigned CERF group IDs. Length equals len(guarded_nodes)
+            when group_per_node=True, or [single_id] when False.
+        """
+        gating_node.node_type = "gating"
+
+        if group_per_node:
+            group_ids = []
+            for node in guarded_nodes:
+                gid = self._next_cerf_group
+                self._next_cerf_group += 1
+                if gid >= 16:
+                    raise ValueError(f"CERF group overflow: {gid} >= 16 (max 16 groups)")
+                node.cond_exec_en = True
+                node.cond_exec_group_id = gid
+                node.cond_exec_invert = invert
+                group_ids.append(gid)
+        else:
+            gid = self._next_cerf_group
+            self._next_cerf_group += 1
+            if gid >= 16:
+                raise ValueError(f"CERF group overflow: {gid} >= 16 (max 16 groups)")
+            for node in guarded_nodes:
+                node.cond_exec_en = True
+                node.cond_exec_group_id = gid
+                node.cond_exec_invert = invert
+            group_ids = [gid]
+
+        gating_node.cerf_write_groups = sorted(set(
+            gating_node.cerf_write_groups + group_ids
+        ))
+        return group_ids
+
     def bingo_visualize_dfg(self, filename: str = "dfg_visualization.png", figsize: tuple = (10, 8)) -> None:
         """Visualize the DFG with different shapes for task types and colors for chiplets."""
         import matplotlib.pyplot as plt

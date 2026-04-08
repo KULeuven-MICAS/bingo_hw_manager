@@ -1,13 +1,27 @@
+# Build artifacts
 .bender/
 build/
-*.log
 Bender.lock
-transcript
-*.wlf
 work-vsim/
 tb/
+
+# Simulation logs
+*.log
+transcript
+*.wlf
+
+# IDE / tools
 .vscode
+.claude
+
+# Generated test outputs
 test/generated/
 test/results/
+eval_results/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Documentation (tracked in dev branch only)
 dev_doc/
-model/__pycache__/

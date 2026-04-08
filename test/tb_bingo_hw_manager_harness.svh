@@ -63,7 +63,7 @@ localparam host_axi_lite_addr_t H2H_DONE_QUEUE_BASE  = 48'h4000_0000;
 // ---------------------------------------------------------------------------
 localparam int unsigned TaskIdWidth = 12;
 
-typedef logic                                                        bingo_hw_manager_task_type_t;
+typedef logic [1:0]                                                  bingo_hw_manager_task_type_t;
 typedef logic [TaskIdWidth-1:0]                                      bingo_hw_manager_task_id_t;
 typedef logic [ChipIdWidth-1:0]                                      bingo_hw_manager_assigned_chiplet_id_t;
 typedef logic [cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
@@ -91,6 +91,9 @@ typedef struct packed {
     bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
     bingo_hw_manager_task_id_t                   task_id;
     bingo_hw_manager_task_type_t                 task_type;
+    logic                                        cond_exec_en;
+    logic [3:0]                                  cond_exec_group_id;
+    logic                                        cond_exec_invert;
 } bingo_hw_manager_task_desc_t;
 
 localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
@@ -112,6 +115,9 @@ typedef struct packed {
     bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
     bingo_hw_manager_task_id_t                   task_id;
     bingo_hw_manager_task_type_t                 task_type;
+    logic                                        cond_exec_en;
+    logic [3:0]                                  cond_exec_group_id;
+    logic                                        cond_exec_invert;
 } bingo_hw_manager_task_desc_full_t;
 
 typedef struct packed {
@@ -188,6 +194,9 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.dep_set_info.dep_set_chiplet_id  = dep_set_chiplet_id;
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
+    tmp.cond_exec_en                     = 1'b0;
+    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -210,6 +219,9 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     tmp.dep_check_info.dep_check_en      = 1'b1;
     tmp.dep_check_info.dep_check_code    = dep_check_code;
     tmp.dep_set_info                     = '0;
+    tmp.cond_exec_en                     = 1'b0;
+    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -238,6 +250,9 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.dep_set_info.dep_set_chiplet_id  = dep_set_chiplet_id;
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
+    tmp.cond_exec_en                     = 1'b0;
+    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -443,6 +458,30 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin
 end
 
 // ---------------------------------------------------------------------------
+// DARTS Tier 1: Per-chiplet CERF control signals (driven by stimulus)
+// ---------------------------------------------------------------------------
+logic [NUM_CHIPLET-1:0]      cerf_write_en;
+logic [3:0]                  cerf_write_group_id [NUM_CHIPLET];
+logic [NUM_CHIPLET-1:0]      cerf_write_val;
+logic [NUM_CHIPLET-1:0]      cerf_clear_all;
+
+initial begin
+    cerf_write_en = '0;
+    cerf_write_val = '0;
+    cerf_clear_all = '0;
+    for (int i = 0; i < NUM_CHIPLET; i++) cerf_write_group_id[i] = '0;
+end
+
+task automatic cerf_activate_group(input int chip, input int group_id);
+    cerf_write_en[chip]        <= 1'b1;
+    cerf_write_group_id[chip]  <= group_id;
+    cerf_write_val[chip]       <= 1'b1;
+    @(posedge clk_i);
+    cerf_write_en[chip]        <= 1'b0;
+    @(posedge clk_i);
+endtask
+
+// ---------------------------------------------------------------------------
 // DUT Instantiation
 // ---------------------------------------------------------------------------
 for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_dut
@@ -498,7 +537,14 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( '0                                                          ),
         .pm_axi_lite_req_o                    ( /* unused */                                                ),
-        .pm_axi_lite_resp_i                   ( '0                                                          )
+        .pm_axi_lite_resp_i                   ( '0                                                          ),
+        // DARTS Tier 1: CERF interface (stimulus files can drive these)
+        .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
+        .cerf_write_group_id_i                ( cerf_write_group_id[chiplet_idx]                             ),
+        .cerf_write_val_i                     ( cerf_write_val[chiplet_idx]                                  ),
+        .cerf_clear_all_i                     ( cerf_clear_all[chiplet_idx]                                  ),
+        // DARTS: Load monitor
+        .load_total_pending_o                 ( /* unused */                                                )
     );
 end
 

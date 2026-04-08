@@ -87,13 +87,20 @@ class BingoSimulator:
         # In-flight H2H messages: (arrival_cycle, target_chiplet, source_core, target_cluster, dep_set_code)
         self._h2h_inflight: list[tuple[int, int, int, int, int]] = []
 
+    def cerf_write(self, chiplet_id: int, group_id: int, active: bool = True):
+        """Write a CERF entry for a specific chiplet."""
+        self.chiplets[chiplet_id].cerf_write(group_id, active)
+
     def load_tasks(self, per_chiplet_tasks: dict[int, list[TaskDescriptor]]):
         for chip_id, tasks in per_chiplet_tasks.items():
             self._task_lists[chip_id] = list(tasks)
             self._push_idx[chip_id] = 0
             self._push_timer[chip_id] = 0
             for t in tasks:
-                if t.task_type == 0:
+                # Normal (0) and gating (2) tasks need to complete.
+                # Dummy (1) tasks don't go through dispatch/done.
+                # Conditional tasks (cond_exec_en=1) may be skipped at runtime.
+                if t.task_type in (0, 2):
                     self._all_task_ids.add(t.task_id)
 
     def run(self, max_cycles: int = 200000) -> SimResult:
@@ -109,14 +116,33 @@ class BingoSimulator:
             self._deliver_h2h(cycle)
 
             # 3. Tick all chiplets — one clock cycle each
+            pending_cerf_masks = []
             for chip_id, chiplet in self.chiplets.items():
                 events = chiplet.tick(cycle)
                 for ev in events:
                     self.trace.record(ev)
                     if ev.event_type == "TASK_DONE":
                         self._completed_tasks.add(ev.task_id)
+                    elif ev.event_type == "TASK_SKIPPED":
+                        # CERF-skipped task counts as "completed" for progress
+                        self._completed_tasks.add(ev.task_id)
                     elif ev.event_type == "DEP_SET_CHIPLET_SENT":
                         self._route_h2h(ev, cycle)
+                    elif ev.event_type == "CERF_WRITE":
+                        pending_cerf_masks.append((
+                            ev.extra["cerf_write_mask"],
+                            ev.extra["cerf_controlled_mask"],
+                        ))
+
+            # 3b. Apply deferred CERF writes (broadcast to all chiplets)
+            # Deferred so CERF updates take effect next cycle, matching RTL timing.
+            # Clear-before-set: deactivate all controlled groups, then activate selected.
+            # This enables CERF group reuse across sequential gating tasks (e.g., multi-layer MoE).
+            for write_mask, controlled_mask in pending_cerf_masks:
+                for cid in self.chiplets:
+                    for g in range(16):
+                        if (controlled_mask >> g) & 1:
+                            self.chiplets[cid].cerf_write(g, bool((write_mask >> g) & 1))
 
             # 4. Check completion
             if self._completed_tasks == self._all_task_ids:

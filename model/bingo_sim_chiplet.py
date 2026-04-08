@@ -22,7 +22,7 @@ from .bingo_sim_trace import SimEvent
 @dataclass
 class TaskDescriptor:
     """Unpacked task descriptor matching the RTL struct."""
-    task_type: int          # 0=normal, 1=dummy
+    task_type: int          # 0=normal, 1=dummy, 2=gating
     task_id: int
     assigned_chiplet_id: int
     assigned_cluster_id: int
@@ -34,6 +34,16 @@ class TaskDescriptor:
     dep_set_chiplet_id: int
     dep_set_cluster_id: int
     dep_set_code: int       # bitmask
+    # Flux Tier 1: Conditional Execution
+    cond_exec_en: bool = False
+    cond_exec_group_id: int = 0
+    cond_exec_invert: bool = False
+    # Per-task fixed delay (cycles); None → use config work_delay_range
+    work_delay: Optional[int] = None
+    # Bitmask: CERF groups to activate on completion (gating tasks only)
+    cerf_write_mask: int = 0
+    # Bitmask: all CERF groups this gating task controls (for clear-before-set)
+    cerf_controlled_mask: int = 0
 
 
 @dataclass
@@ -127,9 +137,23 @@ class ChipletModel:
         self.core_countdown: list[list[int]] = [
             [0] * num_cores for _ in range(num_clusters)
         ]
+        self.core_task: list[list[Optional[TaskDescriptor]]] = [
+            [None] * num_cores for _ in range(num_clusters)
+        ]
 
         # Round-robin arbiter for dep_matrix_set
         self._arbiter_idx = 0
+
+        # Flux Tier 1: Conditional Execution Register File
+        self.cerf: list[bool] = [False] * 16
+
+    def cerf_write(self, group_id: int, active: bool):
+        """Write a CERF entry (called by host/gating core)."""
+        self.cerf[group_id] = active
+
+    def cerf_clear_all(self):
+        """Clear all CERF entries (for new inference batch)."""
+        self.cerf = [False] * 16
 
     def tick(self, cycle: int) -> list[SimEvent]:
         """Advance one clock cycle. Returns events generated this cycle.
@@ -239,25 +263,41 @@ class ChipletModel:
             cluster = task.assigned_cluster_id
 
             # DEFER dep_matrix clear — will be applied after dep_set in tick()
-            # This matches RTL: counter_q <= counter_d - (clear ? 1 : 0)
             if task.dep_check_en:
                 self._pending_clears.append((cluster, core, task.dep_check_code))
 
-            # Push to ready queue (unless dummy)
+            # Flux Tier 1: CERF conditional skip check
+            cond_skip = False
+            if task.cond_exec_en:
+                group_active = self.cerf[task.cond_exec_group_id]
+                if task.cond_exec_invert:
+                    cond_skip = group_active      # skip when active
+                else:
+                    cond_skip = not group_active   # skip when inactive
+
             is_dummy_check = (task.task_type == 1 and task.dep_check_en)
             is_dummy_set = (task.task_type == 1 and task.dep_set_en)
-            if not is_dummy_check and not is_dummy_set:
-                self.ready_queues[core][cluster].push(task)
 
-            # Push to checkout queue
-            self.checkout_queues[core][cluster].push(task)
+            if cond_skip:
+                # CERF skip: task enters checkout ONLY (as dummy, for dep_set propagation)
+                # Mirrors RTL: checkout_queue_data_in.task_type forced to 2'b01
+                from dataclasses import replace
+                skip_task = replace(task, task_type=1)
+                self.checkout_queues[core][cluster].push(skip_task)
+                event_type = "TASK_SKIPPED"
+            else:
+                # Normal flow: push to ready queue (unless dummy)
+                if not is_dummy_check and not is_dummy_set:
+                    self.ready_queues[core][cluster].push(task)
+                # Push to checkout queue
+                self.checkout_queues[core][cluster].push(task)
+                event_type = "DEP_CHECK_PASS"
 
-            # Pop waiting queue
             wq.pop()
 
             events.append(SimEvent(
                 time=cycle,
-                event_type="DEP_CHECK_PASS",
+                event_type=event_type,
                 chiplet_id=self.chiplet_id,
                 cluster_id=cluster,
                 core_id=core,
@@ -325,8 +365,8 @@ class ChipletModel:
             cq.pop()
             return []
 
-        if task.task_type == 0 and not task.dep_set_en:
-            # Normal task with no dep_set: needs done_queue match to pop
+        if task.task_type in (0, 2) and not task.dep_set_en:
+            # Normal/gating task with no dep_set: needs done_queue match to pop
             dq, done_info = self._find_done_match(core, cluster)
             if done_info:
                 cq.pop()
@@ -334,8 +374,8 @@ class ChipletModel:
                 return []
             return None  # No done match → blocked
 
-        if task.task_type == 0 and task.dep_set_en:
-            # Normal task with dep_set: needs done_queue match
+        if task.task_type in (0, 2) and task.dep_set_en:
+            # Normal/gating task with dep_set: needs done_queue match
             dq, done_info = self._find_done_match(core, cluster)
             if not done_info:
                 return None  # No done match → blocked
@@ -436,8 +476,25 @@ class ChipletModel:
                     if self.core_countdown[cl][co] <= 0:
                         # Task done
                         task_id = self.core_task_id[cl][co]
+                        completed_task = self.core_task[cl][co]
                         self.core_busy[cl][co] = False
                         self.core_task_id[cl][co] = -1
+                        self.core_task[cl][co] = None
+
+                        # Gating task: emit CERF_WRITE event (applied by top-level sim)
+                        if completed_task is not None and completed_task.cerf_controlled_mask:
+                            events.append(SimEvent(
+                                time=cycle,
+                                event_type="CERF_WRITE",
+                                chiplet_id=self.chiplet_id,
+                                cluster_id=cl,
+                                core_id=co,
+                                task_id=task_id,
+                                extra={
+                                    "cerf_write_mask": completed_task.cerf_write_mask,
+                                    "cerf_controlled_mask": completed_task.cerf_controlled_mask,
+                                },
+                            ))
 
                         # Push to done queue
                         done_info = DoneInfo(task_id, co, cl)
@@ -459,9 +516,10 @@ class ChipletModel:
                     rq = self.ready_queues[co][cl]
                     if not rq.empty:
                         task = rq.pop()
-                        delay = self.rng.randint(*self.work_delay_range)
+                        delay = task.work_delay if task.work_delay is not None else self.rng.randint(*self.work_delay_range)
                         self.core_busy[cl][co] = True
                         self.core_task_id[cl][co] = task.task_id
+                        self.core_task[cl][co] = task
                         self.core_countdown[cl][co] = delay
 
                         events.append(SimEvent(

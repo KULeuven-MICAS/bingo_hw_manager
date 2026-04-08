@@ -111,14 +111,23 @@ module bingo_hw_manager_top #(
     input device_axi_lite_data_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    bingo_hw_manager_core_power_domain_i,
     // AXI Lite Master Interface
     output host_axi_lite_req_t                  pm_axi_lite_req_o,
-    input  host_axi_lite_resp_t                 pm_axi_lite_resp_i
+    input  host_axi_lite_resp_t                 pm_axi_lite_resp_i,
+    // DARTS: CERF (Conditional Execution Register File) interface
+    input  logic                                cerf_write_en_i,
+    input  logic [3:0]                          cerf_write_group_id_i,
+    input  logic                                cerf_write_val_i,
+    input  logic                                cerf_clear_all_i,
+    // DARTS: Load Monitor output (CSR readable)
+    output logic [10:0]                         load_total_pending_o
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
-    // Task Type
-    // 0: Normal Task
-    // 1: Dummy Task
-    typedef logic                                        bingo_hw_manager_task_type_t;
+    // Task Type (DARTS: expanded to 2 bits for gating support)
+    // 2'b00: Normal Task
+    // 2'b01: Dummy Task (set/check synchronization)
+    // 2'b10: Gating Task (executes on core, writes CERF on completion)
+    // 2'b11: Reserved
+    typedef logic [1:0]                                  bingo_hw_manager_task_type_t;
     // Task ID
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
     // Assigned Chiplet ID
@@ -142,7 +151,7 @@ module bingo_hw_manager_top #(
         logic                                        dep_set_en;
     } bingo_hw_manager_dep_set_info_t;
 
-    // Task info struct
+    // Task info struct (DARTS: includes conditional execution fields)
     typedef struct packed{
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
@@ -151,6 +160,10 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
+        // DARTS Tier 1: Conditional Execution
+        logic                                        cond_exec_en;
+        logic [3:0]                                  cond_exec_group_id;
+        logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_t;
 
     localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
@@ -171,6 +184,10 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
+        // DARTS Tier 1: Conditional Execution
+        logic                                        cond_exec_en;
+        logic [3:0]                                  cond_exec_group_id;
+        logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_full_t;
 
     // Done info struct
@@ -429,6 +446,22 @@ module bingo_hw_manager_top #(
     logic                                done_queue_mbox_empty;
     bingo_hw_manager_done_info_full_t    cur_done_queue_info_axi;
     ///////////////////////////////////////
+    // DARTS Tier 1: CERF state and per-core conditional skip signals
+    logic [15:0] cerf_state;
+    logic [NUM_CORES_PER_CLUSTER-1:0] cond_exec_skip;
+
+    // DARTS CERF: per-core conditional skip evaluation.
+    // Only valid when there IS a task being processed (queue not empty).
+    // When cond_exec_en==0 (default), this is always 0 regardless of CERF state.
+    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin: gen_cerf_skip
+        logic cerf_group_active_for_core;
+        assign cerf_group_active_for_core = cerf_state[waiting_dep_check_task_desc[c].cond_exec_group_id];
+        assign cond_exec_skip[c] = !waiting_dep_check_queue_empty[c] &&
+                                    waiting_dep_check_task_desc[c].cond_exec_en &&
+                                    (waiting_dep_check_task_desc[c].cond_exec_invert ?
+                                        cerf_group_active_for_core : !cerf_group_active_for_core);
+    end
+
     // PM signals
     ///////////////////////////////////////
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
@@ -497,9 +530,18 @@ module bingo_hw_manager_top #(
         // Tie off the unused slave interface signals
         assign task_queue_axi_lite_resp_o = '0;
     end
+    //////////////////////////////////////////////////////////////////////
+    // Task queue → demux (direct connection, no mux needed)
+    //////////////////////////////////////////////////////////////////////
+    host_axi_lite_data_t muxed_task_data;
+    logic                muxed_task_valid;
+
+    assign muxed_task_data  = task_queue_mbox_data;
+    assign muxed_task_valid = !task_queue_mbox_empty;
     assign task_queue_mbox_pop = stream_demux_core_type_inp_ready && !task_queue_mbox_empty;
-    // Compose the current task descriptor
-    assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(task_queue_mbox_data);
+
+    // Compose the current task descriptor from the muxed source
+    assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
     assign cur_task_desc.task_id = cur_task_desc_full.task_id;
     assign cur_task_desc.task_type = cur_task_desc_full.task_type;
     assign cur_task_desc.assigned_chiplet_id = cur_task_desc_full.assigned_chiplet_id;
@@ -507,6 +549,10 @@ module bingo_hw_manager_top #(
     assign cur_task_desc.assigned_core_id = cur_task_desc_full.assigned_core_id;
     assign cur_task_desc.dep_check_info = cur_task_desc_full.dep_check_info;
     assign cur_task_desc.dep_set_info = cur_task_desc_full.dep_set_info;
+    // DARTS Tier 1: CERF fields
+    assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
+    assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
+    assign cur_task_desc.cond_exec_invert = cur_task_desc_full.cond_exec_invert;
 
 
     /////////////////////////////////////////////////////////
@@ -607,7 +653,7 @@ module bingo_hw_manager_top #(
         .oup_ready_i ( stream_demux_core_type_oup_ready )
     );
     always_comb begin: compose_stream_demux_core_type_signals
-        stream_demux_core_type_inp_valid = !task_queue_mbox_empty;
+        stream_demux_core_type_inp_valid = muxed_task_valid;
         stream_demux_core_type_oup_sel = cur_task_desc.assigned_core_id;
         for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
             stream_demux_core_type_oup_ready[core] = !waiting_dep_check_queue_full[core];
@@ -671,7 +717,7 @@ module bingo_hw_manager_top #(
         stream_filter i_stream_filter_dummy_check_task_to_ready_and_checkout_queue (
             .valid_i ( dep_check_manager_oup_ready_and_checkout_queue_valid[core]    ),
             .ready_o ( dep_check_manager_oup_ready_and_checkout_queue_ready[core]    ),
-            .drop_i  ( (waiting_dep_check_task_desc[core].task_type) && (waiting_dep_check_task_desc[core].dep_check_info.dep_check_en) ), // Drop if it is a dummy check task
+            .drop_i  ( (waiting_dep_check_task_desc[core].task_type == 2'b01) && (waiting_dep_check_task_desc[core].dep_check_info.dep_check_en) ), // Drop if it is a dummy check task
             .valid_o ( demux_ready_and_checkout_queue_inp_valid[core]  ),
             .ready_i ( demux_ready_and_checkout_queue_inp_ready[core]  )
         );
@@ -751,7 +797,7 @@ module bingo_hw_manager_top #(
                     // Handshake from the checkout demux and the per-(core,cluster) done queue
                     // Dummy set: no done queue check needed
                     // Normal: per-(core,cluster) done queue must be non-empty
-                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = (checkout_queue_data_out[core][cluster].task_type) ?
+                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = (checkout_queue_data_out[core][cluster].task_type == 2'b01) ?
                                                                                       stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster] :
                                                                                       ((stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster]) &&
                                                                                        (!done_q_empty[core][cluster]));
@@ -825,8 +871,13 @@ module bingo_hw_manager_top #(
             );
             assign ready_queue_filter_inp_valid[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster];
             // Drop the dummy set tasks
-            assign ready_queue_filter_drop[core][cluster] = (waiting_dep_check_task_desc[core].task_type) && 
-                                                                        (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1);
+            // Drop from ready queue if:
+            // 1. Dummy set task (task_type==01, dep_set_en==1) — existing behavior
+            // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
+            assign ready_queue_filter_drop[core][cluster] =
+                ((waiting_dep_check_task_desc[core].task_type == 2'b01) &&
+                 (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1)) ||
+                cond_exec_skip[core];
             assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
             if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_ready_queue_axi_lite_mailbox                               
                 bingo_hw_manager_read_mailbox #(
@@ -918,7 +969,14 @@ module bingo_hw_manager_top #(
                 .data_o      ( checkout_queue_data_out[core][cluster] ),
                 .pop_i       ( checkout_queue_pop[core][cluster]      )
             );
-            assign checkout_queue_data_in[core][cluster] = waiting_dep_check_task_desc[core];
+            // DARTS CERF: if task is conditionally skipped, mark as dummy (2'b01)
+            // so checkout logic fires dep_set without done_queue match
+            always_comb begin
+                checkout_queue_data_in[core][cluster] = waiting_dep_check_task_desc[core];
+                if (cond_exec_skip[core]) begin
+                    checkout_queue_data_in[core][cluster].task_type = 2'b01;
+                end
+            end
             assign checkout_queue_push[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster] && !checkout_queue_full[core][cluster];
             assign checkout_queue_pop[core][cluster] = stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster] && !checkout_queue_empty[core][cluster];
 
@@ -1042,8 +1100,10 @@ module bingo_hw_manager_top #(
     always_comb begin
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
+                // Normal (2'b00) and gating (2'b10) tasks need done_queue match
                 done_q_pop[core][cluster] = !done_q_empty[core][cluster] &&
-                    (checkout_queue_data_out[core][cluster].task_type == 1'b0) &&
+                    (checkout_queue_data_out[core][cluster].task_type == 2'b00 ||
+                     checkout_queue_data_out[core][cluster].task_type == 2'b10) &&
                     stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
             end
         end
@@ -1194,5 +1254,36 @@ module bingo_hw_manager_top #(
         .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
     );
 
+    //////////////////////////////////////////////////////////////////////
+    // DARTS Tier 3: Load Monitor
+    //////////////////////////////////////////////////////////////////////
+    bingo_hw_manager_load_monitor #(
+        .NumCores   (NUM_CORES_PER_CLUSTER),
+        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CounterWidth(8)
+    ) i_load_monitor (
+        .clk_i              (clk_i),
+        .rst_ni             (rst_ni),
+        .task_dispatched_i  (ready_queue_pop),
+        .task_done_i        (done_q_push),
+        .pending_per_core_o (/* CSR readable — connect when needed */),
+        .total_pending_o    (load_total_pending_o)
+    );
+
+    //////////////////////////////////////////////////////////////////////
+    // DARTS Tier 1: Conditional Execution Register File (CERF)
+    //////////////////////////////////////////////////////////////////////
+
+    bingo_hw_manager_cond_exec_controller #(
+        .NumGroups(16)
+    ) i_cerf (
+        .clk_i           ( clk_i                   ),
+        .rst_ni          ( rst_ni                  ),
+        .cerf_state_o    ( cerf_state              ),
+        .write_en_i      ( cerf_write_en_i         ),
+        .write_group_id_i( cerf_write_group_id_i   ),
+        .write_val_i     ( cerf_write_val_i        ),
+        .clear_all_i     ( cerf_clear_all_i        )
+    );
 
 endmodule

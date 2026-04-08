@@ -40,8 +40,13 @@ def dfg_to_task_descriptors(dfg, num_cores=3):
         if chip not in per_chiplet:
             per_chiplet[chip] = []
 
+        type_map = {"dummy": 1, "gating": 2}
+        tt = type_map.get(node.node_type, 0)
+        cerf_mask = sum(1 << g for g in node.cerf_write_groups) if node.cerf_write_groups else 0
+        cerf_ctrl = cerf_mask  # for run_all_tests, controlled == activated (static tests)
+
         task = TaskDescriptor(
-            task_type=1 if node.node_type == "dummy" else 0,
+            task_type=tt,
             task_id=node.node_id,
             assigned_chiplet_id=node.assigned_chiplet_id,
             assigned_cluster_id=node.assigned_cluster_id,
@@ -53,6 +58,11 @@ def dfg_to_task_descriptors(dfg, num_cores=3):
             dep_set_chiplet_id=node.dep_set_chiplet_id,
             dep_set_cluster_id=node.dep_set_cluster_id,
             dep_set_code=_list_to_bitmask(node.dep_set_list),
+            cond_exec_en=node.cond_exec_en,
+            cond_exec_group_id=node.cond_exec_group_id,
+            cond_exec_invert=node.cond_exec_invert,
+            cerf_write_mask=cerf_mask,
+            cerf_controlled_mask=cerf_ctrl,
         )
         per_chiplet[chip].append(task)
 
@@ -102,6 +112,7 @@ def run_pattern(name, factory, kwargs, output_dir, emit_sv=False, verbose=True):
 
     # Build and compile DFG
     dfg = factory(**kwargs)
+    dfg.bingo_compile_conditional_regions()
     dfg.bingo_transform_dfg_add_dummy_set_nodes()
     dfg.bingo_transform_dfg_add_dummy_check_nodes()
     dfg.bingo_assign_normal_node_dep_check_info()
@@ -135,6 +146,21 @@ def run_pattern(name, factory, kwargs, output_dir, emit_sv=False, verbose=True):
         random_seed=42,
     )
     sim = BingoSimulator(config)
+
+    # Flux Tier 1: For CERF test patterns, annotate some nodes as conditional
+    # and set CERF state before running.
+    if name.startswith("cerf_"):
+        # Annotate the middle 50% of normal nodes as conditional (group 0)
+        normal_nodes = [n for n in dfg.node_list if n.node_type == "normal"]
+        mid_start = len(normal_nodes) // 4
+        mid_end = mid_start + len(normal_nodes) // 2
+        cond_nodes = normal_nodes[mid_start:mid_end]
+        dfg.bingo_annotate_conditional_subgraph(cond_nodes, group_id=0)
+        # Activate group 0 → conditional tasks EXECUTE (not skipped)
+        sim.cerf_write(0, 0, True)
+        if verbose:
+            print(f"  CERF: {len(cond_nodes)} nodes annotated as conditional (group 0, active)")
+
     per_chiplet = dfg_to_task_descriptors(dfg, num_cores)
     sim.load_tasks(per_chiplet)
     result = sim.run()

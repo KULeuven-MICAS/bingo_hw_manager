@@ -221,6 +221,55 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 - [AXI](https://github.com/pulp-platform/axi) v0.39.1 — AXI-Lite definitions, crossbar
 - [common_cells](https://github.com/pulp-platform/common_cells) v1.37.0 — FIFO, stream arbiter/demux/filter, counters
 
+## DARTS: Dynamic Adaptive Runtime Task Scheduling
+
+DARTS extends the static scheduler with conditional execution support for data-dependent workloads (MoE routing, early exit). See `dev_doc/` for full architecture documentation.
+
+### Conditional Execution (CERF)
+
+A 16-entry Conditional Execution Register File (CERF) per chiplet enables runtime task skipping. Tasks marked as conditional are either executed or skipped based on the CERF state, which is written by **gating tasks** on completion.
+
+The user expresses conditional execution through **conditional edges** in the DFG:
+
+```python
+# Router conditionally activates each expert (compiler handles the rest)
+dfg.bingo_add_edge(router, expert_0, cond=True)
+dfg.bingo_add_edge(router, expert_1, cond=True)
+dfg.bingo_add_edge(expert_0, aggregator)          # unconditional
+
+# Compile: auto-assigns CERF groups, promotes router to gating task
+compile_dfg(dfg)
+
+# Simulate: specify which nodes are active
+run_sim(dfg, config, active_nodes={expert_0})
+```
+
+The compiler pass `bingo_compile_conditional_regions()`:
+1. Scans edges for `cond=True`
+2. Auto-promotes source nodes to gating tasks (`task_type=2`)
+3. Groups conditional targets by connected components (unconditional edges between targets = shared CERF group)
+4. Assigns CERF group IDs (0-15) automatically
+
+Skipped tasks still propagate dependency signals (via the checkout queue as dummies), preserving graph correctness.
+
+### Additional Modules
+
+| Module | Purpose |
+|--------|---------|
+| `bingo_hw_manager_cond_exec_controller.sv` | 16-entry CERF register file |
+| `bingo_hw_manager_load_monitor.sv` | Per-core pending task counters (load monitoring) |
+
+### Evaluation Results
+
+Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`):
+
+| Workload | Configuration | Speedup |
+|----------|---------------|---------|
+| MoE 8 experts, top-2 | 1 cluster, 3 cores | 2.29x |
+| MoE 16 experts, top-1 | 1 cluster, 3 cores | 4.15x |
+| MoE 8 experts, top-2 | 2 chiplets | 1.84-1.95x |
+| Early exit (stage 0/4) | 1 cluster, 3 cores | 3.28x |
+
 ## Source Files
 
 | Level | File | Description |
@@ -234,6 +283,8 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 | 1 | `bingo_hw_manager_chiplet_dep_set.sv` | H2H AXI-Lite master |
 | 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM |
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
+| 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
+| 1 | `bingo_hw_manager_load_monitor.sv` | Load monitoring |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
@@ -256,4 +307,7 @@ source ../.venv/bin/activate
 python3 scripts/run_all_tests.py --stress 200
 ```
 
-**Test results:** 53/53 RTL simulations pass with zero deadlocks across all structured and random DAG patterns.
+**Test results:**
+- RTL: 66/66 pass (includes CERF conditional tests) with zero deadlocks
+- Python model: 68/68 pass (20 structured + 48 random stress)
+- Evaluation: 4 experiment suites, all deadlock-free (CSV results in `eval_results/`)

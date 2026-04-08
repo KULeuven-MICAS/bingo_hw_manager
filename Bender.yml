@@ -22,6 +22,8 @@ sources:
   - src/bingo_hw_manager_csr_to_fifo_read.sv   # CSR to FIFO Read
   - src/bingo_hw_manager_csr_to_fifo.sv        # CSR to FIFO Interface Module
   # Level 1
+  - src/bingo_hw_manager_cond_exec_controller.sv # DARTS: CERF
+  - src/bingo_hw_manager_load_monitor.sv         # DARTS: Load Monitor
   - src/bingo_hw_manager_dep_matrix.sv         # Dependency Matrix Module
   - src/bingo_hw_manager_chiplet_dep_set.sv    # Chiplet DependencySetModule (The Master port to send chiplet dep set info to other chiplets)
   - src/bingo_hw_manager_dep_check_manager.sv  # Dependency Check Manager Module
@@ -32,6 +34,8 @@ sources:
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv
       - test/tb_bingo_hw_manager_top.sv
+      - test/tb_bingo_hw_manager_cerf_basic.sv
+      - test/tb_bingo_hw_manager_cerf_skip.sv
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.

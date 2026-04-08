@@ -526,6 +526,138 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         ))
         return group_ids
 
+    # ----------------------------------------------------------------
+    # Conditional-Aware Auto-Scheduler
+    # ----------------------------------------------------------------
+    def bingo_auto_assign(
+        self,
+        n_chiplets: int = 1,
+        n_clusters: int = 2,
+        n_cores: int = 3,
+        work_delays: dict | None = None,
+        activation_weights: dict | None = None,
+    ) -> None:
+        """Automatically assign tasks to (chiplet, cluster, core).
+
+        Uses a conditional-aware HEFT-style scheduler that distinguishes
+        between tasks that always execute and tasks that may be skipped.
+        The key optimisation: for **slot selection**, conditional tasks
+        use *expected* cost (``p * delay``), favouring cores that already
+        carry mutually-exclusive conditional tasks.  For **slot EFT
+        tracking**, *full* cost is charged (pessimistic) to prevent
+        over-packing.
+
+        Must be called **before** ``bingo_compile_conditional_regions()``.
+
+        Args:
+            n_chiplets, n_clusters, n_cores: Hardware dimensions.
+            work_delays: Optional ``{node_name: cycles}`` dict.
+            activation_weights: Optional ``{BingoNode: float}`` with
+                per-node activation probability.  If *None*, ``k/N``
+                is derived from the conditional edge fan-out.
+        """
+        work_delays = work_delays or {}
+        default_delay = 100
+
+        def _delay(n):
+            return work_delays.get(n.node_name, default_delay)
+
+        # -- Derive activation probabilities --------------------------
+        act_w: dict = {}
+        if activation_weights is not None:
+            act_w = dict(activation_weights)
+        else:
+            gating_to_targets: dict = {}
+            for u, v, d in self.edges(data=True):
+                if d.get("cond", False):
+                    gating_to_targets.setdefault(u, set()).add(v)
+            for _, targets in gating_to_targets.items():
+                k = min(2, len(targets))
+                p = k / max(len(targets), 1)
+                for t in targets:
+                    act_w[t] = p
+        for node in self.node_list:
+            act_w.setdefault(node, 1.0)
+
+        # -- Slot bookkeeping -----------------------------------------
+        slots: list[tuple[int, int, int]] = []
+        for chip in range(n_chiplets):
+            for cl in range(n_clusters):
+                for co in range(n_cores):
+                    slots.append((chip, cl, co))
+        n_slots = len(slots)
+
+        slot_eft = [0.0] * n_slots       # pessimistic (full-cost) EFT
+        slot_exp_eft = [0.0] * n_slots    # expected (conditional-discount) EFT
+        assignment: dict = {}
+        H2H_LATENCY = 10
+
+        # -- Schedule in topological order ----------------------------
+        for node in nx.topological_sort(self):
+            delay = _delay(node)
+            p = act_w[node]               # activation probability
+
+            best_slot = 0
+            best_score = float("inf")
+
+            for s_idx in range(n_slots):
+                chip = slots[s_idx][0]
+
+                # Earliest this node can start: max of slot availability
+                # and all predecessors' finish times (+H2H if cross-chip).
+                pred_ready = 0.0
+                for pred in self.predecessors(node):
+                    if pred in assignment:
+                        ps = assignment[pred]
+                        pf = slot_eft[ps]
+                        if slots[ps][0] != chip:
+                            pf += H2H_LATENCY
+                        pred_ready = max(pred_ready, pf)
+
+                # For slot selection: use EXPECTED EFT.
+                # Conditional tasks discount their own delay by p.
+                avail = slot_exp_eft[s_idx]
+                start = max(avail, pred_ready)
+                score = start + p * delay
+
+                # Tie-break: among equal scores, prefer the least-loaded
+                # slot (lowest pessimistic EFT) → spreads tasks across cores.
+                if (score < best_score
+                        or (score == best_score
+                            and slot_eft[s_idx] < slot_eft[best_slot])):
+                    best_score = score
+                    best_slot = s_idx
+
+            # Assign to best slot.
+            assignment[node] = best_slot
+
+            # Compute actual start (using pessimistic slot EFT).
+            pred_ready = 0.0
+            for pred in self.predecessors(node):
+                if pred in assignment:
+                    ps = assignment[pred]
+                    pf = slot_eft[ps]
+                    if slots[ps][0] != slots[best_slot][0]:
+                        pf += H2H_LATENCY
+                    pred_ready = max(pred_ready, pf)
+            actual_start = max(slot_eft[best_slot], pred_ready)
+
+            # Update pessimistic EFT: conditional-aware.
+            # Hot tasks (p~1.0) charge full delay.  Cold tasks (p~0) charge
+            # only a small skip-processing cost (pipeline overhead for
+            # dep_set propagation), freeing the core for hot tasks.
+            SKIP_FRACTION = 0.05  # skipped task ≈ 5% of full execution
+            effective_delay = max(p, SKIP_FRACTION) * delay
+            slot_eft[best_slot] = actual_start + effective_delay
+            # Update expected EFT: discounted delay (guides future choices).
+            exp_start = max(slot_exp_eft[best_slot], pred_ready)
+            slot_exp_eft[best_slot] = exp_start + p * delay
+
+            chip, cl, co = slots[best_slot]
+            node.assigned_chiplet_id = chip
+            node.assigned_cluster_id = cl
+            node.assigned_core_id = co
+
     def bingo_visualize_dfg(self, filename: str = "dfg_visualization.png", figsize: tuple = (10, 8)) -> None:
         """Visualize the DFG with different shapes for task types and colors for chiplets."""
         import matplotlib.pyplot as plt

@@ -158,12 +158,16 @@ def analyze_fx_graph(model, example_input) -> ModelDescriptor:
 def from_model_descriptor(
     desc: ModelDescriptor,
     hw: ChipletConfig,
+    auto_place: bool = False,
 ) -> tuple[BingoDFG, DFGMeta]:
     """Generate a conditional DFG from a model descriptor.
 
     Produces one DFG covering all layers.  MoE layers get conditional edges
     (one CERF group per expert); dense layers are unconditional.
-    CERF groups are reused across layers (max ``n_experts`` groups needed).
+
+    Args:
+        auto_place: If True, use the conditional-aware auto-scheduler to
+                    assign tasks to cores.  If False, use round-robin.
 
     Returns:
         (dfg, meta) where meta contains node references for simulation.
@@ -171,7 +175,6 @@ def from_model_descriptor(
     dfg = BingoDFG()
     meta = DFGMeta()
     work_delays: dict[str, int] = {}
-    n_slots = hw.n_chiplets * hw.n_clusters * hw.n_cores
 
     prev_node: Optional[BingoNode] = None
 
@@ -183,8 +186,7 @@ def from_model_descriptor(
         attn_desc = (desc.attention_layers[layer_idx]
                      if layer_idx < len(desc.attention_layers)
                      else AttentionDescriptor())
-        attn_co = layer_idx % hw.n_cores
-        attn = BingoNode(0, 0, attn_co, f"attn_{layer_idx}")
+        attn = BingoNode(node_name=f"attn_{layer_idx}")
         dfg.bingo_add_node(attn)
         work_delays[attn.node_name] = attn_desc.latency
         if prev_node is not None:
@@ -194,8 +196,7 @@ def from_model_descriptor(
             moe_desc = desc.moe_layers[moe_pos]
 
             # --- Router (gating) ---
-            router_co = (attn_co + 1) % hw.n_cores
-            router = BingoNode(0, 0, router_co, f"router_{layer_idx}")
+            router = BingoNode(node_name=f"router_{layer_idx}")
             dfg.bingo_add_node(router)
             dfg.bingo_add_edge(attn, router)
             work_delays[router.node_name] = moe_desc.gate_latency
@@ -204,11 +205,7 @@ def from_model_descriptor(
             # --- Experts (conditional) ---
             experts = []
             for i in range(moe_desc.n_experts):
-                chip = i % hw.n_chiplets
-                rem = i // hw.n_chiplets
-                cl = (rem // hw.n_cores) % hw.n_clusters
-                co = rem % hw.n_cores
-                exp = BingoNode(chip, cl, co, f"expert_{layer_idx}_{i}")
+                exp = BingoNode(node_name=f"expert_{layer_idx}_{i}")
                 dfg.bingo_add_node(exp)
                 dfg.bingo_add_edge(router, exp, cond=True)
                 work_delays[exp.node_name] = moe_desc.expert_latency
@@ -216,8 +213,7 @@ def from_model_descriptor(
             meta.expert_nodes[layer_idx] = experts
 
             # --- Aggregator ---
-            agg_co = (router_co + 1) % hw.n_cores
-            agg = BingoNode(0, 0, agg_co, f"agg_{layer_idx}")
+            agg = BingoNode(node_name=f"agg_{layer_idx}")
             dfg.bingo_add_node(agg)
             for exp in experts:
                 dfg.bingo_add_edge(exp, agg)
@@ -226,20 +222,34 @@ def from_model_descriptor(
             prev_node = agg
         else:
             # Dense FFN (unconditional)
-            ffn_co = (attn_co + 1) % hw.n_cores
-            ffn = BingoNode(0, 0, ffn_co, f"ffn_{layer_idx}")
+            ffn = BingoNode(node_name=f"ffn_{layer_idx}")
             dfg.bingo_add_node(ffn)
             dfg.bingo_add_edge(attn, ffn)
-            work_delays[ffn.node_name] = 200  # default FFN latency
+            work_delays[ffn.node_name] = 200
             prev_node = ffn
 
-    # Store work_delays on the DFG for later use
-    dfg._work_delays = work_delays
-    meta.n_cerf_groups_used = len(set(
-        g for groups in meta.expert_nodes.values()
-        for g in range(len(groups))
-    ))
+    # Assign tasks to cores
+    if auto_place:
+        dfg.bingo_auto_assign(
+            n_chiplets=hw.n_chiplets,
+            n_clusters=hw.n_clusters,
+            n_cores=hw.n_cores,
+            work_delays=work_delays,
+        )
+    else:
+        # Round-robin fallback
+        n_slots = hw.n_chiplets * hw.n_clusters * hw.n_cores
+        for i, node in enumerate(dfg.node_list):
+            if node.assigned_core_id == -1:
+                chip = i % hw.n_chiplets
+                rem = i // hw.n_chiplets
+                cl = (rem // hw.n_cores) % hw.n_clusters
+                co = rem % hw.n_cores
+                node.assigned_chiplet_id = chip
+                node.assigned_cluster_id = cl
+                node.assigned_core_id = co
 
+    dfg._work_delays = work_delays
     return dfg, meta
 
 
@@ -257,6 +267,7 @@ def from_mixtral_config(
     gate_latency: int = 50,
     aggregator_latency: int = 100,
     hw: Optional[ChipletConfig] = None,
+    auto_place: bool = False,
 ) -> tuple[BingoDFG, DFGMeta]:
     """Generate a conditional DFG for a Mixtral-style MoE transformer.
 
@@ -284,7 +295,7 @@ def from_mixtral_config(
         ],
         moe_layer_indices=list(range(n_layers)),
     )
-    return from_model_descriptor(desc, hw)
+    return from_model_descriptor(desc, hw, auto_place=auto_place)
 
 
 def from_early_exit_config(

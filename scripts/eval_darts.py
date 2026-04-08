@@ -816,6 +816,65 @@ def experiment_mod(output_dir, verbose=True):
 
 
 # ════════════════════════════════════════════════════════════
+#  Experiment 7 — Auto-Scheduling vs Round-Robin
+# ════════════════════════════════════════════════════════════
+
+
+def experiment_auto_schedule(output_dir, verbose=True):
+    """Compare auto-placement vs round-robin on Mixtral configurations."""
+    sys.path.insert(0, os.path.join(_root, "sw"))
+    from bingo_frontend import from_mixtral_config, ChipletConfig
+
+    hw = ChipletConfig(n_chiplets=1, n_clusters=2, n_cores=3)
+    sim_config = SimConfig(
+        num_chiplets=1, num_clusters_per_chiplet=2,
+        num_cores_per_cluster=3,
+        work_delay_range=(100, 100), random_seed=42,
+    )
+    rows = []
+
+    for n_layers in [4, 8, 16, 32]:
+        for mode in ["round-robin", "auto"]:
+            auto = (mode == "auto")
+            dfg, meta = from_mixtral_config(
+                n_layers=n_layers, n_experts=8, top_k=2,
+                hw=hw, auto_place=auto,
+            )
+            compile_dfg(dfg)
+
+            # DARTS top-2
+            active = set()
+            for experts in meta.expert_nodes.values():
+                active.update(experts[:2])
+            darts = run_sim(dfg, sim_config, active, dfg._work_delays,
+                            label=f"{mode}_{n_layers}L_darts")
+
+            # Static
+            static = run_sim(dfg, sim_config, None, dfg._work_delays,
+                             label=f"{mode}_{n_layers}L_static")
+
+            speedup = static.latency / max(darts.latency, 1)
+
+            if verbose:
+                d = "DEAD" if (static.deadlock or darts.deadlock) else "OK"
+                print(f"  {n_layers:2d}L {mode:12s}  static={static.latency:6d}  "
+                      f"darts={darts.latency:6d}  speedup={speedup:.2f}x  "
+                      f"skip={darts.tasks_skipped:3d}  {d}")
+
+            rows.append({
+                "layers": n_layers, "placement": mode,
+                "static_latency": static.latency,
+                "darts_latency": darts.latency,
+                "speedup": f"{speedup:.2f}",
+                "tasks_skipped": darts.tasks_skipped,
+                "deadlock": static.deadlock or darts.deadlock,
+            })
+
+    _save_csv(os.path.join(output_dir, "auto_schedule.csv"), rows)
+    return rows
+
+
+# ════════════════════════════════════════════════════════════
 #  Output
 # ════════════════════════════════════════════════════════════
 
@@ -865,12 +924,13 @@ def main():
     parser.add_argument("--sweep", action="store_true", help="N/k sweep only")
     parser.add_argument("--spec-decode", action="store_true", help="Speculative decoding only")
     parser.add_argument("--mod", action="store_true", help="Mixture of Depths only")
+    parser.add_argument("--auto-sched", action="store_true", help="Auto-scheduling comparison only")
     parser.add_argument("--output", default=None, help="Output directory")
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args()
 
     run_all = not (args.moe or args.early_exit or args.sweep
-                   or args.spec_decode or args.mod)
+                   or args.spec_decode or args.mod or args.auto_sched)
     verbose = not args.quiet
     output_dir = args.output or os.path.join(_root, "eval_results")
     os.makedirs(output_dir, exist_ok=True)
@@ -949,6 +1009,18 @@ def main():
         _print_table(
             "Mixture of Depths Results", rows,
             ["skip_rate", "blocks_active", "mode", "latency",
+             "speedup", "tasks_skipped", "deadlock"],
+        )
+
+    # ── Experiment 7: Auto-scheduling ──
+    if run_all or args.auto_sched:
+        print(f"\n{'─' * 78}")
+        print("  Experiment 7: Auto-Scheduling vs Round-Robin  (Mixtral 4-32L)")
+        print(f"{'─' * 78}")
+        rows = experiment_auto_schedule(output_dir, verbose)
+        _print_table(
+            "Auto-Scheduling Results", rows,
+            ["layers", "placement", "static_latency", "darts_latency",
              "speedup", "tasks_skipped", "deadlock"],
         )
 

@@ -7,10 +7,10 @@ class BingoNode(metaclass=ABCMeta):
     """Abstract base class for nodes in the DFG."""
     def __init__(
         self,
-        assigned_chiplet_id: int,
-        assigned_cluster_id: int,
-        assigned_core_id: int,
-        node_name: str,
+        assigned_chiplet_id: int = -1,
+        assigned_cluster_id: int = -1,
+        assigned_core_id: int = -1,
+        node_name: str = "",
     ) -> None:
         self._node_name = node_name
         self._node_id: int = 0

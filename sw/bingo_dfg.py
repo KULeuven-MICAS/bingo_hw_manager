@@ -341,6 +341,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
     def bingo_compile_conditional_regions(self) -> dict:
         """Compile conditional edges into CERF group assignments.
 
+        Also validates that all nodes have valid core assignments
+        (catches missing ``bingo_auto_assign()`` calls).
+
         Scans every edge for the ``cond`` attribute set by
         ``bingo_add_edge(..., cond=True)``.  For each gating node (a node
         with at least one outgoing conditional edge):
@@ -359,6 +362,18 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             dict mapping each conditionally-gated BingoNode to its CERF
             group id.  Also stored in ``self._node_to_cerf_group``.
         """
+        # -- Validate core assignments ----------------------------------------
+        unassigned = [n for n in self.node_list if n.assigned_core_id < 0]
+        if unassigned:
+            names = ", ".join(n.node_name for n in unassigned[:5])
+            suffix = f" (and {len(unassigned)-5} more)" if len(unassigned) > 5 else ""
+            raise ValueError(
+                f"{len(unassigned)} node(s) have no core assignment: "
+                f"{names}{suffix}. "
+                f"Call bingo_auto_assign() before compile, or provide "
+                f"explicit (chiplet, cluster, core) in BingoNode()."
+            )
+
         # -- Step 1: identify gating nodes and their conditional targets ------
         gating_to_targets: dict[BingoNode, set[BingoNode]] = {}
         for u, v, data in self.edges(data=True):

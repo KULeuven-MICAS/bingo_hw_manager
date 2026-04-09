@@ -536,6 +536,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         // DARTS Tier 1: CERF interface (stimulus files can drive these)
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
+        .cerf_state_o                         ( /* read-back, unused in standalone TB */                     ),
         // DARTS: Load monitor
         .load_total_pending_o                 ( /* unused */                                                )
     );

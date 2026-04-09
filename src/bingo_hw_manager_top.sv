@@ -115,6 +115,7 @@ module bingo_hw_manager_top #(
     // DARTS: CERF (Conditional Execution Register File) interface
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
+    output logic [31:0]                         cerf_state_o,
     // DARTS: Load Monitor output (CSR readable)
     output logic [10:0]                         load_total_pending_o
 );
@@ -446,6 +447,7 @@ module bingo_hw_manager_top #(
     ///////////////////////////////////////
     // DARTS Tier 1: CERF state and per-core conditional skip signals
     logic [31:0] cerf_state;
+    assign cerf_state_o = cerf_state;  // read-back for SW
     logic [NUM_CORES_PER_CLUSTER-1:0] cond_exec_skip;
 
     // DARTS CERF: per-core conditional skip evaluation.

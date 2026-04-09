@@ -92,7 +92,7 @@ typedef struct packed {
     bingo_hw_manager_task_id_t                   task_id;
     bingo_hw_manager_task_type_t                 task_type;
     logic                                        cond_exec_en;
-    logic [3:0]                                  cond_exec_group_id;
+    logic [4:0]                                  cond_exec_group_id;
     logic                                        cond_exec_invert;
 } bingo_hw_manager_task_desc_t;
 
@@ -116,7 +116,7 @@ typedef struct packed {
     bingo_hw_manager_task_id_t                   task_id;
     bingo_hw_manager_task_type_t                 task_type;
     logic                                        cond_exec_en;
-    logic [3:0]                                  cond_exec_group_id;
+    logic [4:0]                                  cond_exec_group_id;
     logic                                        cond_exec_invert;
 } bingo_hw_manager_task_desc_full_t;
 
@@ -195,7 +195,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
     tmp.cond_exec_en                     = 1'b0;
-    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
@@ -220,7 +220,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     tmp.dep_check_info.dep_check_code    = dep_check_code;
     tmp.dep_set_info                     = '0;
     tmp.cond_exec_en                     = 1'b0;
-    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
@@ -251,7 +251,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
     tmp.cond_exec_en                     = 1'b0;
-    tmp.cond_exec_group_id               = 4'b0;
+    tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
@@ -461,23 +461,18 @@ end
 // DARTS Tier 1: Per-chiplet CERF control signals (driven by stimulus)
 // ---------------------------------------------------------------------------
 logic [NUM_CHIPLET-1:0]      cerf_write_en;
-logic [3:0]                  cerf_write_group_id [NUM_CHIPLET];
-logic [NUM_CHIPLET-1:0]      cerf_write_val;
-logic [NUM_CHIPLET-1:0]      cerf_clear_all;
+logic [31:0]                 cerf_write_data [NUM_CHIPLET];
 
 initial begin
     cerf_write_en = '0;
-    cerf_write_val = '0;
-    cerf_clear_all = '0;
-    for (int i = 0; i < NUM_CHIPLET; i++) cerf_write_group_id[i] = '0;
+    for (int i = 0; i < NUM_CHIPLET; i++) cerf_write_data[i] = '0;
 end
 
-task automatic cerf_activate_group(input int chip, input int group_id);
-    cerf_write_en[chip]        <= 1'b1;
-    cerf_write_group_id[chip]  <= group_id;
-    cerf_write_val[chip]       <= 1'b1;
+task automatic cerf_write_bitmask(input int chip, input logic [31:0] mask);
+    cerf_write_data[chip] <= mask;
+    cerf_write_en[chip]   <= 1'b1;
     @(posedge clk_i);
-    cerf_write_en[chip]        <= 1'b0;
+    cerf_write_en[chip]   <= 1'b0;
     @(posedge clk_i);
 endtask
 
@@ -540,9 +535,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .pm_axi_lite_resp_i                   ( '0                                                          ),
         // DARTS Tier 1: CERF interface (stimulus files can drive these)
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
-        .cerf_write_group_id_i                ( cerf_write_group_id[chiplet_idx]                             ),
-        .cerf_write_val_i                     ( cerf_write_val[chiplet_idx]                                  ),
-        .cerf_clear_all_i                     ( cerf_clear_all[chiplet_idx]                                  ),
+        .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
         // DARTS: Load monitor
         .load_total_pending_o                 ( /* unused */                                                )
     );

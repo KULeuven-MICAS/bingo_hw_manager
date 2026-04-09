@@ -321,7 +321,7 @@ def make_mod_dfg(n_layers=12, n_cores=3):
 
     Each router_l is a gating task controlling block_l.  If the router
     decides to skip, block_l is skipped and merge_l just passes the
-    residual.  Each layer uses one CERF group (max 16 layers supported).
+    residual.  Each layer uses one CERF group (max 32 layers supported).
 
     Returns (dfg, block_nodes, work_delays).
     """

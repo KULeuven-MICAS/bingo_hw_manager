@@ -157,7 +157,7 @@ def run_pattern(name, factory, kwargs, output_dir, emit_sv=False, verbose=True):
         cond_nodes = normal_nodes[mid_start:mid_end]
         dfg.bingo_annotate_conditional_subgraph(cond_nodes, group_id=0)
         # Activate group 0 → conditional tasks EXECUTE (not skipped)
-        sim.cerf_write(0, 0, True)
+        sim.cerf_write_mask(0, 0x1)  # Activate group 0
         if verbose:
             print(f"  CERF: {len(cond_nodes)} nodes annotated as conditional (group 0, active)")
 

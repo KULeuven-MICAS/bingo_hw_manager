@@ -28,7 +28,7 @@ initial begin
         1'b1, 1'b0, 0, 0, bingo_hw_manager_dep_code_t'(8'b00000100)
     );
     t2.cond_exec_en = 1'b1;
-    t2.cond_exec_group_id = 4'd0;
+    t2.cond_exec_group_id = 5'd0;
     t2.cond_exec_invert = 1'b0;  // skip when group 0 is INACTIVE (default)
 end
 

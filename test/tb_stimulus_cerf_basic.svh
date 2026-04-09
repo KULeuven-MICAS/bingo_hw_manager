@@ -27,7 +27,7 @@ initial begin
         1'b1, 1'b0, 0, 0, bingo_hw_manager_dep_code_t'(8'b00000100)
     );
     t2.cond_exec_en = 1'b1;
-    t2.cond_exec_group_id = 4'd0;
+    t2.cond_exec_group_id = 5'd0;
     t2.cond_exec_invert = 1'b0;  // execute when group 0 is ACTIVE
 end
 
@@ -46,7 +46,7 @@ initial begin : chip0_push
     done_queue_master[0].reset();
 
     // Activate CERF group 0 BEFORE pushing tasks
-    cerf_activate_group(0, 0);
+    cerf_write_bitmask(0, 32'h0000_0001);
     $display("[CERF] %0t Group 0 activated", $time);
 
     task_queue_master[0].write(task_queue_base[0], '0, t1, '1, resp);

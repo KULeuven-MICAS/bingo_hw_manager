@@ -114,9 +114,7 @@ module bingo_hw_manager_top #(
     input  host_axi_lite_resp_t                 pm_axi_lite_resp_i,
     // DARTS: CERF (Conditional Execution Register File) interface
     input  logic                                cerf_write_en_i,
-    input  logic [3:0]                          cerf_write_group_id_i,
-    input  logic                                cerf_write_val_i,
-    input  logic                                cerf_clear_all_i,
+    input  logic [31:0]                         cerf_write_data_i,
     // DARTS: Load Monitor output (CSR readable)
     output logic [10:0]                         load_total_pending_o
 );
@@ -162,7 +160,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_type_t                 task_type;
         // DARTS Tier 1: Conditional Execution
         logic                                        cond_exec_en;
-        logic [3:0]                                  cond_exec_group_id;
+        logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_t;
 
@@ -186,7 +184,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_type_t                 task_type;
         // DARTS Tier 1: Conditional Execution
         logic                                        cond_exec_en;
-        logic [3:0]                                  cond_exec_group_id;
+        logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_full_t;
 
@@ -447,7 +445,7 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_done_info_full_t    cur_done_queue_info_axi;
     ///////////////////////////////////////
     // DARTS Tier 1: CERF state and per-core conditional skip signals
-    logic [15:0] cerf_state;
+    logic [31:0] cerf_state;
     logic [NUM_CORES_PER_CLUSTER-1:0] cond_exec_skip;
 
     // DARTS CERF: per-core conditional skip evaluation.
@@ -1275,15 +1273,13 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
 
     bingo_hw_manager_cond_exec_controller #(
-        .NumGroups(16)
+        .NumGroups(32)
     ) i_cerf (
-        .clk_i           ( clk_i                   ),
-        .rst_ni          ( rst_ni                  ),
-        .cerf_state_o    ( cerf_state              ),
-        .write_en_i      ( cerf_write_en_i         ),
-        .write_group_id_i( cerf_write_group_id_i   ),
-        .write_val_i     ( cerf_write_val_i        ),
-        .clear_all_i     ( cerf_clear_all_i        )
+        .clk_i            ( clk_i                  ),
+        .rst_ni           ( rst_ni                 ),
+        .cerf_state_o     ( cerf_state             ),
+        .cerf_write_data_i( cerf_write_data_i      ),
+        .cerf_write_en_i  ( cerf_write_en_i        )
     );
 
 endmodule

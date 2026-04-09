@@ -144,16 +144,23 @@ class ChipletModel:
         # Round-robin arbiter for dep_matrix_set
         self._arbiter_idx = 0
 
-        # Flux Tier 1: Conditional Execution Register File
-        self.cerf: list[bool] = [False] * 16
+        # Flux Tier 1: Conditional Execution Register File (32 groups)
+        self.cerf: list[bool] = [False] * 32
 
-    def cerf_write(self, group_id: int, active: bool):
-        """Write a CERF entry (called by host/gating core)."""
-        self.cerf[group_id] = active
+    def cerf_write_mask(self, mask: int):
+        """Write the full CERF bitmask (called by host/gating core)."""
+        for i in range(32):
+            self.cerf[i] = bool(mask & (1 << i))
+
+    def cerf_update(self, controlled_mask: int, write_mask: int):
+        """Read-modify-write: update only controlled groups."""
+        current = sum((1 << i) for i in range(32) if self.cerf[i])
+        updated = (current & ~controlled_mask) | (write_mask & controlled_mask)
+        self.cerf_write_mask(updated)
 
     def cerf_clear_all(self):
         """Clear all CERF entries (for new inference batch)."""
-        self.cerf = [False] * 16
+        self.cerf = [False] * 32
 
     def tick(self, cycle: int) -> list[SimEvent]:
         """Advance one clock cycle. Returns events generated this cycle.

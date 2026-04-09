@@ -87,9 +87,13 @@ class BingoSimulator:
         # In-flight H2H messages: (arrival_cycle, target_chiplet, source_core, target_cluster, dep_set_code)
         self._h2h_inflight: list[tuple[int, int, int, int, int]] = []
 
-    def cerf_write(self, chiplet_id: int, group_id: int, active: bool = True):
-        """Write a CERF entry for a specific chiplet."""
-        self.chiplets[chiplet_id].cerf_write(group_id, active)
+    def cerf_write_mask(self, chiplet_id: int, mask: int):
+        """Write the full CERF bitmask for a specific chiplet."""
+        self.chiplets[chiplet_id].cerf_write_mask(mask)
+
+    def cerf_update(self, chiplet_id: int, controlled_mask: int, write_mask: int):
+        """Read-modify-write CERF for a specific chiplet."""
+        self.chiplets[chiplet_id].cerf_update(controlled_mask, write_mask)
 
     def load_tasks(self, per_chiplet_tasks: dict[int, list[TaskDescriptor]]):
         for chip_id, tasks in per_chiplet_tasks.items():
@@ -136,13 +140,10 @@ class BingoSimulator:
 
             # 3b. Apply deferred CERF writes (broadcast to all chiplets)
             # Deferred so CERF updates take effect next cycle, matching RTL timing.
-            # Clear-before-set: deactivate all controlled groups, then activate selected.
-            # This enables CERF group reuse across sequential gating tasks (e.g., multi-layer MoE).
+            # Read-modify-write: only controlled groups are updated, others preserved.
             for write_mask, controlled_mask in pending_cerf_masks:
                 for cid in self.chiplets:
-                    for g in range(16):
-                        if (controlled_mask >> g) & 1:
-                            self.chiplets[cid].cerf_write(g, bool((write_mask >> g) & 1))
+                    self.chiplets[cid].cerf_update(controlled_mask, write_mask)
 
             # 4. Check completion
             if self._completed_tasks == self._all_task_ids:

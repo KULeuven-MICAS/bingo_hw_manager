@@ -462,7 +462,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             for component in components:
                 gid = self._next_cerf_group
                 self._next_cerf_group += 1
-                if gid >= 16:
+                if gid >= 32:
                     hint = ("Sequential gating reuse is active — "
                             "too many experts per layer."
                             if reuse_groups else
@@ -519,8 +519,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             for node in guarded_nodes:
                 gid = self._next_cerf_group
                 self._next_cerf_group += 1
-                if gid >= 16:
-                    raise ValueError(f"CERF group overflow: {gid} >= 16 (max 16 groups)")
+                if gid >= 32:
+                    raise ValueError(f"CERF group overflow: {gid} >= 32 (max 32 groups)")
                 node.cond_exec_en = True
                 node.cond_exec_group_id = gid
                 node.cond_exec_invert = invert
@@ -672,6 +672,113 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             node.assigned_chiplet_id = chip
             node.assigned_cluster_id = cl
             node.assigned_core_id = co
+
+    # ----------------------------------------------------------------
+    # High-Level Model Primitives
+    # ----------------------------------------------------------------
+    def bingo_add_moe_layer(
+        self,
+        input_node: BingoNode,
+        n_experts: int = 8,
+        top_k: int = 2,
+        layer_name: str = "moe",
+    ):
+        """Add a complete MoE layer to the DFG.
+
+        Creates: ``input → router_compute → gating_op → experts → aggregator``
+
+        The compiler automatically inserts a **gating_op** node between
+        the router computation and the experts.  This cleanly decouples
+        data flow (router computes logits) from control flow (gating_op
+        writes CERF).  The user never writes ``cond=True``.
+
+        Args:
+            input_node: The predecessor node (e.g., attention output).
+            n_experts: Number of expert FFNs.
+            top_k: Number of experts activated per token.
+            layer_name: Name prefix for generated nodes.
+
+        Returns:
+            An object with ``.router``, ``.gating_op``, ``.experts``,
+            ``.aggregator`` attributes.
+
+        Example::
+
+            moe = dfg.bingo_add_moe_layer(attn, n_experts=8, top_k=2)
+            dfg.bingo_add_edge(moe.aggregator, next_layer)
+        """
+        # Router compute: FFN + softmax + topk (pure data, task_type=normal)
+        router = BingoNode(node_name=f"{layer_name}_router")
+        self.bingo_add_node(router)
+        self.bingo_add_edge(input_node, router)
+
+        # Gating op: reads router output → writes CERF (task_type=gating)
+        # Compiler-inserted — decouples computation from control.
+        gating_op = BingoNode(node_name=f"{layer_name}_gate")
+        self.bingo_add_node(gating_op)
+        self.bingo_add_edge(router, gating_op)
+
+        # Experts: conditionally activated by gating_op
+        experts = []
+        for i in range(n_experts):
+            exp = BingoNode(node_name=f"{layer_name}_expert_{i}")
+            self.bingo_add_node(exp)
+            self.bingo_add_edge(gating_op, exp, cond=True)
+            experts.append(exp)
+
+        # Aggregator: weighted sum of active expert outputs
+        aggregator = BingoNode(node_name=f"{layer_name}_agg")
+        self.bingo_add_node(aggregator)
+        for exp in experts:
+            self.bingo_add_edge(exp, aggregator)
+
+        class MoELayer:
+            pass
+        layer = MoELayer()
+        layer.router = router
+        layer.gating_op = gating_op
+        layer.experts = experts
+        layer.aggregator = aggregator
+        layer.n_experts = n_experts
+        layer.top_k = top_k
+        return layer
+
+    def bingo_add_early_exit_stage(
+        self,
+        input_node: BingoNode,
+        prev_stage=None,
+        stage_name: str = "stage",
+    ):
+        """Add one stage of an early-exit network.
+
+        Creates: ``input → compute → gating_op``
+
+        If ``prev_stage`` is provided, inserts conditional edges from
+        the previous stage's gating_op to this stage's compute and
+        gating_op — the previous classifier gates whether this stage
+        executes.
+
+        Returns:
+            An object with ``.compute`` and ``.gating_op`` attributes.
+        """
+        compute = BingoNode(node_name=f"{stage_name}_compute")
+        gating_op = BingoNode(node_name=f"{stage_name}_gate")
+        self.bingo_add_node(compute)
+        self.bingo_add_node(gating_op)
+        self.bingo_add_edge(input_node, compute)
+        self.bingo_add_edge(compute, gating_op)
+
+        # Previous stage's gating_op controls whether this stage runs
+        if prev_stage is not None:
+            self.bingo_add_edge(prev_stage.gating_op, compute, cond=True)
+            self.bingo_add_edge(prev_stage.gating_op, gating_op, cond=True)
+
+        class Stage:
+            pass
+        s = Stage()
+        s.compute = compute
+        s.gating_op = gating_op
+        return s
 
     def bingo_visualize_dfg(self, filename: str = "dfg_visualization.png", figsize: tuple = (10, 8)) -> None:
         """Visualize the DFG with different shapes for task types and colors for chiplets."""

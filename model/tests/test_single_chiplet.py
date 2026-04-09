@@ -125,7 +125,15 @@ class TestNoDependency:
 
 
 class TestDummyCheckNode:
-    """Test dummy check node handling."""
+    """Test dummy check node handling.
+
+    With the counter-based dep matrix, a dep_check + clear_row decrements the
+    counter.  If two tasks on the same core need the same dependency, the
+    upstream must set it twice, OR the dummy check must chain a new dep_set
+    for the next consumer.  This test uses the chaining pattern:
+      Task 2 (core 1) sets dep for core 0  →  dummy check consumes it,
+      dummy check sets dep for core 0      →  task 3 consumes it.
+    """
 
     def test_dummy_check(self):
         config = SimConfig(
@@ -138,15 +146,16 @@ class TestDummyCheckNode:
         sim = BingoSimulator(config)
 
         # Task 1 on core 0 → sets core 1
-        # Task 2 on core 1 → sets core 0
-        # Dummy check on core 0 (checks core 1)
-        # Task 3 on core 0 (checks core 1) — after dummy check clears
+        # Task 2 on core 1 (checks core 0) → sets core 0
+        # Dummy check on core 0 (checks core 1) → chains dep_set for core 0
+        # Task 3 on core 0 (checks core 0) — consumes dep from dummy check
         tasks = [
             make_task(1, 0, 0, dep_set_en=True, dep_set_code=0b010, dep_set_cluster=0),
             make_task(2, 0, 1, dep_check_en=True, dep_check_code=0b001,
                       dep_set_en=True, dep_set_code=0b001, dep_set_cluster=0),
-            make_task(10, 0, 0, task_type=1, dep_check_en=True, dep_check_code=0b010),
-            make_task(3, 0, 0, dep_check_en=True, dep_check_code=0b010),
+            make_task(10, 0, 0, task_type=1, dep_check_en=True, dep_check_code=0b010,
+                      dep_set_en=True, dep_set_code=0b001, dep_set_cluster=0),
+            make_task(3, 0, 0, dep_check_en=True, dep_check_code=0b001),
         ]
         sim.load_tasks({0: tasks})
         result = sim.run()

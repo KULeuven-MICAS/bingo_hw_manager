@@ -7,17 +7,17 @@ class BingoNode(metaclass=ABCMeta):
     """Abstract base class for nodes in the DFG."""
     def __init__(
         self,
-        assigned_chiplet_id: int,
-        assigned_cluster_id: int,
-        assigned_core_id: int,
-        node_name: str,
+        assigned_chiplet_id: int = -1,
+        assigned_cluster_id: int = -1,
+        assigned_core_id: int = -1,
+        node_name: str = "",
     ) -> None:
         self._node_name = node_name
         self._node_id: int = 0
         self._assigned_chiplet_id = assigned_chiplet_id
         self._assigned_cluster_id = assigned_cluster_id
         self._assigned_core_id = assigned_core_id
-        self._node_type: Literal['normal', 'dummy'] = "normal"
+        self._node_type: Literal['normal', 'dummy', 'gating'] = "normal"
         self._dep_check_enable: bool = False
         self._dep_check_list: list[int] = []
         self._dep_set_enable: bool = False
@@ -25,6 +25,12 @@ class BingoNode(metaclass=ABCMeta):
         self._dep_set_list: list[int] = []
         self._dep_set_chiplet_id: int = 0
         self._dep_set_cluster_id: int = 0
+        # DARTS Tier 1: Conditional Execution
+        self._cond_exec_en: bool = False
+        self._cond_exec_group_id: int = 0
+        self._cond_exec_invert: bool = False
+        # CERF groups this gating node writes on completion
+        self._cerf_write_groups: list[int] = []
 
     # Getters and Setters
     @property
@@ -68,12 +74,44 @@ class BingoNode(metaclass=ABCMeta):
         self._assigned_core_id = value
 
     @property
-    def node_type(self) -> Literal['normal', 'dummy']:
+    def node_type(self) -> Literal['normal', 'dummy', 'gating']:
         return self._node_type
 
     @node_type.setter
-    def node_type(self, value: Literal['normal', 'dummy']) -> None:
+    def node_type(self, value: Literal['normal', 'dummy', 'gating']) -> None:
         self._node_type = value
+
+    @property
+    def cond_exec_en(self) -> bool:
+        return self._cond_exec_en
+
+    @cond_exec_en.setter
+    def cond_exec_en(self, value: bool) -> None:
+        self._cond_exec_en = value
+
+    @property
+    def cond_exec_group_id(self) -> int:
+        return self._cond_exec_group_id
+
+    @cond_exec_group_id.setter
+    def cond_exec_group_id(self, value: int) -> None:
+        self._cond_exec_group_id = value
+
+    @property
+    def cond_exec_invert(self) -> bool:
+        return self._cond_exec_invert
+
+    @cond_exec_invert.setter
+    def cond_exec_invert(self, value: bool) -> None:
+        self._cond_exec_invert = value
+
+    @property
+    def cerf_write_groups(self) -> list[int]:
+        return self._cerf_write_groups
+
+    @cerf_write_groups.setter
+    def cerf_write_groups(self, value: list[int]) -> None:
+        self._cerf_write_groups = value
 
     @property
     def dep_check_enable(self) -> bool:
@@ -153,14 +191,18 @@ class BingoNode(metaclass=ABCMeta):
                 one_hot |= (1 << idx)
             return f"bingo_hw_manager_dep_code_t'({width}'b{one_hot:0{width}b})"
 
+        # Map node_type to 2-bit task_type value
+        task_type_map = {"normal": "2'b00", "dummy": "2'b01", "gating": "2'b10"}
+        task_type_sv = task_type_map.get(self._node_type, "2'b00")
+
         # Determine the appropriate pack function based on the node type
-        if self._node_type == "normal":
+        if self._node_type in ("normal", "gating"):
             pack_function = "pack_normal_task"
             dep_check_code = list_to_one_hot(self._dep_check_list)
             dep_set_code = list_to_one_hot(self._dep_set_list)
             sv_str = (
                 f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                f"    1'b0, // task_type\n"
+                f"    {task_type_sv}, // task_type\n"
                 f"    16'd{self._node_id}, // task_id\n"
                 f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
                 f"    {self._assigned_cluster_id}, // assigned_cluster_id\n"
@@ -170,18 +212,17 @@ class BingoNode(metaclass=ABCMeta):
                 f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
                 f"    1'b{int(self._remote_dep_set_all)}, // dep_set_all_chiplet\n"
                 f"    {self._dep_set_chiplet_id}, // dep_set_chiplet_id\n"
-                f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"   
+                f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"
                 f"    {dep_set_code} // dep_set_code\n"
                 f");"
             )
         elif self._node_type == "dummy":
             pack_function = "pack_dummy_check_task" if self._dep_check_enable else "pack_dummy_set_task"
             if self._dep_check_enable:
-                # Dummy check node
                 dep_check_code = list_to_one_hot(self._dep_check_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                    f"    1'b1, // task_type\n"
+                    f"    {task_type_sv}, // task_type\n"
                     f"    16'd{self._node_id}, // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
                     f"    {self._assigned_cluster_id}, // assigned_cluster_id\n"
@@ -191,11 +232,10 @@ class BingoNode(metaclass=ABCMeta):
                     f");"
                 )
             else:
-                # Dummy set node
                 dep_set_code = list_to_one_hot(self._dep_set_list)
                 sv_str = (
                     f"bingo_hw_manager_task_desc_full_t {self._node_name} = {pack_function}(\n"
-                    f"    1'b1, // task_type\n"
+                    f"    {task_type_sv}, // task_type\n"
                     f"    16'd{self._node_id},  // task_id\n"
                     f"    {self._assigned_chiplet_id}, // assigned_chiplet_id\n"
                     f"    {self._assigned_cluster_id}, // assigned_cluster_id\n"
@@ -203,7 +243,7 @@ class BingoNode(metaclass=ABCMeta):
                     f"    1'b{int(self._dep_set_enable)}, // dep_set_en\n"
                     f"    1'b{int(self._remote_dep_set_all)}, // dep_set_all_chiplet\n"
                     f"    {self._dep_set_chiplet_id}, // dep_set_chiplet_id\n"
-                    f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"   
+                    f"    {self._dep_set_cluster_id}, // dep_set_cluster_id\n"
                     f"    {dep_set_code} // dep_set_code\n"
                     f");"
                 )

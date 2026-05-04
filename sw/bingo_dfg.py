@@ -18,6 +18,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # Assign a unique ID to the node
         self.id += 1
         node_obj.node_id = self.id
+        # Default slot_id = core_id for manually placed nodes
+        if node_obj.slot_id < 0 and node_obj.assigned_core_id >= 0:
+            node_obj.slot_id = node_obj.assigned_core_id
         # Add the node to the graph and the lookup dictionaries
         self.add_node(node_obj)
     def bingo_add_edge(self, from_node_obj: BingoNode, to_node_obj: BingoNode, cond: bool = False) -> None:
@@ -92,7 +95,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         )
                         dummy_set_node.node_type = "dummy"
                         dummy_set_node.dep_set_enable = True
-                        dummy_set_node.dep_set_list = [remote_succ_list[0].assigned_core_id]
+                        dummy_set_node.dep_set_list = [remote_succ_list[0].slot_id]
                         dummy_set_node.dep_set_cluster_id = remote_succ_list[0].assigned_cluster_id
                         dummy_set_node.dep_set_chiplet_id = remote_succ_list[0].assigned_chiplet_id # should be fine since it is a broadcast type
                         dummy_set_node.dep_check_enable = False
@@ -113,7 +116,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         )
                         dummy_set_node.node_type = "dummy"
                         dummy_set_node.dep_set_enable = True
-                        dummy_set_node.dep_set_list = [remote_succ.assigned_core_id]
+                        dummy_set_node.dep_set_list = [remote_succ.slot_id]
                         dummy_set_node.dep_set_cluster_id = remote_succ.assigned_cluster_id
                         dummy_set_node.dep_set_chiplet_id = remote_succ.assigned_chiplet_id
                         dummy_set_node.dep_check_enable = False
@@ -134,7 +137,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     )
                     dummy_set_node.node_type = "dummy"
                     dummy_set_node.dep_set_enable = True
-                    dummy_set_node.dep_set_list = [local_succ_list[i].assigned_core_id]
+                    dummy_set_node.dep_set_list = [local_succ_list[i].slot_id]
                     dummy_set_node.dep_set_cluster_id = local_succ_list[i].assigned_cluster_id
                     dummy_set_node.dep_set_chiplet_id = local_succ_list[i].assigned_chiplet_id
                     dummy_set_node.dep_check_enable = False
@@ -170,9 +173,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             # Group predecessors by core_id
             predecessor_core_dict = {}
             for pred in preds_list:
-                if pred.assigned_core_id not in predecessor_core_dict:
-                    predecessor_core_dict[pred.assigned_core_id] = []
-                predecessor_core_dict[pred.assigned_core_id].append(pred)
+                if pred.slot_id not in predecessor_core_dict:
+                    predecessor_core_dict[pred.slot_id] = []
+                predecessor_core_dict[pred.slot_id].append(pred)
 
             # ---- Case 1: same-core groups with 2+ predecessors ----
             # For each such group, insert len(preds)-1 dummy_checks so that
@@ -190,7 +193,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         )
                         dummy_check_node.node_type = "dummy"
                         dummy_check_node.dep_check_enable = True
-                        dummy_check_node.dep_check_list = [preds[i].assigned_core_id]
+                        dummy_check_node.dep_check_list = [preds[i].slot_id]
                         dummy_check_node.dep_set_enable = False
                         dummy_check_node.dep_set_list = []
                         dummy_check_node.dep_set_cluster_id = 0
@@ -207,7 +210,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 if not (pred.node_type == "dummy" and pred.dep_check_enable)
             ]
             # Distinct core_ids from the remaining non-dummy predecessors
-            remaining_core_ids = sorted(set(pred.assigned_core_id for pred in remaining_preds))
+            remaining_core_ids = sorted(set(pred.slot_id for pred in remaining_preds))
 
             if len(remaining_core_ids) >= 2:
                 # Keep only the LAST core as cur_node's direct predecessor.
@@ -216,7 +219,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 cores_to_split = remaining_core_ids[:-1]
                 for split_core in cores_to_split:
                     core_preds = [p for p in self.predecessors(cur_node)
-                                  if p.assigned_core_id == split_core
+                                  if p.slot_id == split_core
                                   and not (p.node_type == "dummy" and p.dep_check_enable)]
                     if not core_preds:
                         continue
@@ -231,7 +234,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     )
                     dummy_check_node.node_type = "dummy"
                     dummy_check_node.dep_check_enable = True
-                    dummy_check_node.dep_check_list = [split_core]
+                    dummy_check_node.dep_check_list = [split_core]  # split_core is already slot_id
                     dummy_check_node.dep_set_enable = False
                     dummy_check_node.dep_set_list = []
                     dummy_check_node.dep_set_cluster_id = 0
@@ -253,7 +256,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 # If there are local predecessors, assign dep_check info
                 if preds:
                     cur_node.dep_check_enable = True
-                    cur_node.dep_check_list = [pred.assigned_core_id for pred in preds]
+                    cur_node.dep_check_list = [pred.slot_id for pred in preds]
                     # Sanity check if there are multiple same core_id
                     if len(cur_node.dep_check_list) != len(set(cur_node.dep_check_list)):
                         print(f"Warning: Multiple local predecessors with the same core_id for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
@@ -281,7 +284,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     print(f"Warning: More than one local successor for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
                 elif len(succs)==1:
                     cur_node.dep_set_enable = True
-                    cur_node.dep_set_list = [succ.assigned_core_id for succ in succs]
+                    cur_node.dep_set_list = [succ.slot_id for succ in succs]
                     cur_node.remote_dep_set_all = False
                     cur_node.dep_set_chiplet_id = succs[0].assigned_chiplet_id
                     cur_node.dep_set_cluster_id = succs[0].assigned_cluster_id
@@ -672,6 +675,251 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             node.assigned_chiplet_id = chip
             node.assigned_cluster_id = cl
             node.assigned_core_id = co
+            node.slot_id = co  # Identity mapping: slot = core for static dispatch
+
+    # ----------------------------------------------------------------
+    # Oracle Placement (brute-force for small instances)
+    # ----------------------------------------------------------------
+    def bingo_oracle_placement(
+        self,
+        n_chiplets: int = 1,
+        n_clusters: int = 1,
+        n_cores: int = 4,
+        work_delays: dict | None = None,
+        activation_weights: dict | None = None,
+        n_mask_samples: int = 0,
+    ) -> dict:
+        """Find the optimal placement by exhaustive enumeration.
+
+        Brute-forces all S^|V| placements and all activation masks to
+        compute the true expected makespan.  Only feasible for small
+        instances (|V| <= ~15, |S| <= ~4).
+
+        Also runs COND-HEFT on the same instance and reports the
+        optimality gap.
+
+        Args:
+            n_chiplets, n_clusters, n_cores: Hardware dimensions.
+            work_delays: Optional ``{node_name: cycles}`` dict.
+            activation_weights: Optional ``{BingoNode: float}`` with
+                per-node activation probability.
+            n_mask_samples: If > 0, sample this many masks instead of
+                enumerating all 2^G masks.  Useful when G > 16.
+
+        Returns:
+            dict with keys: ``opt_makespan``, ``heft_makespan``,
+            ``gap_pct``, ``opt_placement``, ``heft_placement``.
+        """
+        import itertools
+        import math
+
+        work_delays = work_delays or {}
+        default_delay = 100
+
+        def _delay(n):
+            return work_delays.get(n.node_name, default_delay)
+
+        # -- Build slot list --
+        slots: list[tuple[int, int, int]] = []
+        for chip in range(n_chiplets):
+            for cl in range(n_clusters):
+                for co in range(n_cores):
+                    slots.append((chip, cl, co))
+        n_slots = len(slots)
+        H2H_LATENCY = 10
+        SKIP_FRACTION = 0.05
+
+        # -- Derive activation probabilities --
+        act_w: dict = {}
+        if activation_weights is not None:
+            act_w = dict(activation_weights)
+        else:
+            gating_to_targets: dict = {}
+            for u, v, d in self.edges(data=True):
+                if d.get("cond", False):
+                    gating_to_targets.setdefault(u, set()).add(v)
+            for _, targets in gating_to_targets.items():
+                k = min(2, len(targets))
+                p = k / max(len(targets), 1)
+                for t in targets:
+                    act_w[t] = p
+        for node in self.node_list:
+            act_w.setdefault(node, 1.0)
+
+        # -- Identify conditional structure --
+        nodes = list(nx.topological_sort(self))
+        n_nodes = len(nodes)
+        node_idx = {n: i for i, n in enumerate(nodes)}
+
+        # Map: group_id -> set of conditional nodes in that group
+        group_to_nodes: dict[int, set] = {}
+        cond_nodes = set()
+        for n in nodes:
+            if hasattr(n, '_cond_exec_en') and n._cond_exec_en:
+                gid = n._cond_exec_group_id
+                group_to_nodes.setdefault(gid, set()).add(n)
+                cond_nodes.add(n)
+
+        # If no compiled groups yet, derive from edges
+        if not group_to_nodes:
+            gating_to_targets = {}
+            for u, v, d in self.edges(data=True):
+                if d.get("cond", False):
+                    gating_to_targets.setdefault(u, set()).add(v)
+            gid = 0
+            for _, targets in gating_to_targets.items():
+                for t in targets:
+                    group_to_nodes.setdefault(gid, set()).add(t)
+                    cond_nodes.add(t)
+                    gid += 1
+
+        active_groups = sorted(group_to_nodes.keys())
+        n_groups = len(active_groups)
+
+        # -- Generate activation masks --
+        if n_groups == 0:
+            # No conditional tasks — single deterministic mask
+            masks_with_prob = [(set(), 1.0)]
+        elif n_mask_samples > 0:
+            # Sample masks
+            masks_with_prob = []
+            for _ in range(n_mask_samples):
+                m = set()
+                for g in active_groups:
+                    sample_node = next(iter(group_to_nodes[g]))
+                    if random.random() < act_w[sample_node]:
+                        m.add(g)
+                masks_with_prob.append((frozenset(m), 1.0 / n_mask_samples))
+        else:
+            # Enumerate all 2^n_groups masks with probabilities
+            masks_with_prob = []
+            for bits in range(1 << n_groups):
+                m = set()
+                prob = 1.0
+                for i, g in enumerate(active_groups):
+                    sample_node = next(iter(group_to_nodes[g]))
+                    p = act_w[sample_node]
+                    if bits & (1 << i):
+                        m.add(g)
+                        prob *= p
+                    else:
+                        prob *= (1.0 - p)
+                if prob > 0:
+                    masks_with_prob.append((frozenset(m), prob))
+
+        def _is_active(node, mask):
+            """Check if node is active under given activation mask."""
+            if node not in cond_nodes:
+                return True
+            if hasattr(node, '_cond_exec_en') and node._cond_exec_en:
+                return node._cond_exec_group_id in mask
+            # Fallback: check by group_to_nodes
+            for g, ns in group_to_nodes.items():
+                if node in ns:
+                    return g in mask
+            return True
+
+        def _compute_makespan(placement, mask):
+            """Compute makespan for a given placement and mask."""
+            finish = [0.0] * n_nodes
+            slot_avail = [0.0] * n_slots
+
+            for ni, node in enumerate(nodes):
+                s = placement[ni]
+                active = _is_active(node, mask)
+
+                # Earliest start: max of slot availability and predecessor finish
+                pred_ready = 0.0
+                for pred in self.predecessors(node):
+                    pi = node_idx[pred]
+                    ps = placement[pi]
+                    pf = finish[pi]
+                    if slots[ps][0] != slots[s][0]:
+                        pf += H2H_LATENCY
+                    pred_ready = max(pred_ready, pf)
+
+                start = max(slot_avail[s], pred_ready)
+
+                if active:
+                    cost = _delay(node)
+                else:
+                    cost = SKIP_FRACTION * _delay(node)
+
+                finish[ni] = start + cost
+                slot_avail[s] = finish[ni]
+
+            # Makespan = max finish of active tasks
+            ms = 0.0
+            for ni, node in enumerate(nodes):
+                if _is_active(node, mask):
+                    ms = max(ms, finish[ni])
+            return ms
+
+        def _expected_makespan(placement):
+            """Compute expected makespan over all masks."""
+            total = 0.0
+            for mask, prob in masks_with_prob:
+                total += prob * _compute_makespan(placement, mask)
+            return total
+
+        # -- Safety check --
+        total_placements = n_slots ** n_nodes
+        if total_placements > 500_000:
+            raise ValueError(
+                f"Oracle enumeration infeasible: {n_nodes} nodes x "
+                f"{n_slots} slots = {total_placements} placements. "
+                f"Reduce instance size (|V| <= 12, |S| <= 4)."
+            )
+
+        # -- Brute-force optimal --
+        best_makespan = float("inf")
+        best_placement = None
+
+        for placement in itertools.product(range(n_slots), repeat=n_nodes):
+            em = _expected_makespan(placement)
+            if em < best_makespan:
+                best_makespan = em
+                best_placement = placement
+
+        # -- Run COND-HEFT for comparison --
+        self.bingo_auto_assign(
+            n_chiplets=n_chiplets,
+            n_clusters=n_clusters,
+            n_cores=n_cores,
+            work_delays=work_delays,
+            activation_weights=activation_weights,
+        )
+        heft_placement = []
+        for node in nodes:
+            for si, (chip, cl, co) in enumerate(slots):
+                if (node.assigned_chiplet_id == chip
+                        and node.assigned_cluster_id == cl
+                        and node.assigned_core_id == co):
+                    heft_placement.append(si)
+                    break
+        heft_makespan = _expected_makespan(tuple(heft_placement))
+
+        gap_pct = (heft_makespan - best_makespan) / best_makespan * 100
+
+        # -- Format result --
+        opt_assign = {}
+        for ni, node in enumerate(nodes):
+            opt_assign[node.node_name] = slots[best_placement[ni]]
+        heft_assign = {}
+        for ni, node in enumerate(nodes):
+            heft_assign[node.node_name] = slots[heft_placement[ni]]
+
+        return {
+            "opt_makespan": best_makespan,
+            "heft_makespan": heft_makespan,
+            "gap_pct": gap_pct,
+            "n_nodes": n_nodes,
+            "n_slots": n_slots,
+            "n_masks": len(masks_with_prob),
+            "n_groups": n_groups,
+            "opt_placement": opt_assign,
+            "heft_placement": heft_assign,
+        }
 
     # ----------------------------------------------------------------
     # High-Level Model Primitives

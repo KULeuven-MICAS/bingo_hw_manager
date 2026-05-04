@@ -28,11 +28,13 @@ module bingo_hw_manager_csr_to_fifo #(
 //     data_t   data;
 //   } csr_rsp_t;
     parameter type data_t = logic,
-    parameter type bingo_hw_manager_done_info_full_t = logic
+    parameter type bingo_hw_manager_done_info_full_t = logic,
+    parameter type bingo_hw_manager_slot_id_t = logic
     // typedef struct packed{
     //     logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
     //     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
     //     bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+    //     bingo_hw_manager_slot_id_t                 slot_id;
     //     bingo_hw_manager_task_id_t                 task_id;
     // } bingo_hw_manager_done_info_full_t;
 ) (
@@ -51,7 +53,11 @@ module bingo_hw_manager_csr_to_fifo #(
     // FIFO Write interface
     output data_t    [N-1:0]    fifo_data_o,
     output logic     [N-1:0]    fifo_data_valid_o,
-    input  logic     [N-1:0]    fifo_data_ready_i
+    input  logic     [N-1:0]    fifo_data_ready_i,
+    // Slot ID per channel — driven by the scoreboard's inverse (core -> slot)
+    // view at the top level. Used to stamp done_info.slot_id so the dep-matrix
+    // done-match can compare logical slot rather than physical core.
+    input  bingo_hw_manager_slot_id_t [N-1:0]    slot_id_i
 );
 
     // Signals for csr_to_fifo_read
@@ -97,6 +103,11 @@ module bingo_hw_manager_csr_to_fifo #(
         assign done_info[i].reserved_bits       = '0;
         assign done_info[i].assigned_cluster_id = i / NUM_CORES_PER_CLUSTER % NUM_CLUSTERS_PER_CHIPLET;
         assign done_info[i].assigned_core_id    = i % NUM_CORES_PER_CLUSTER;
+        // Phase 1: slot_id is driven by the scoreboard's core->slot inverse view
+        // at the top level. Under today's identity mapping this evaluates to
+        // `i % NUM_CORES_PER_CLUSTER`, so behaviour is unchanged; when a future
+        // dispatcher re-binds slots, this field tracks the current binding.
+        assign done_info[i].slot_id             = slot_id_i[i];
         assign done_info[i].task_id             = done_info_tmp[i][TaskIdWidth-1:0];
         assign fifo_data_o[i] = data_t'(done_info[i]);
         assign csr_req_valid_write[i] = csr_req_valid_i[i] && csr_req_i[i].write;

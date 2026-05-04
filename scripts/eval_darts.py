@@ -38,22 +38,48 @@ sys.path.insert(0, _root)
 from bingo_dfg import BingoDFG
 from bingo_node import BingoNode
 from model.bingo_sim import BingoSimulator, SimConfig
-from model.bingo_sim_chiplet import TaskDescriptor
+from model.bingo_sim_chiplet import TaskDescriptor, DispatchPolicy
 
-# ─── Delay Parameters (cycles) ─────────────────────────────
-EXPERT_DELAY = 200  # Expert FFN compute
-ROUTER_DELAY = 50  # Gating network
-AGGREGATOR_DELAY = 100  # Output aggregation
-INPUT_DELAY = 50  # Input preprocessing
-STAGE_DELAY = 200  # Early exit per-stage compute
-CLASSIFIER_DELAY = 50  # Early exit classifier
-DRAFT_DELAY = 100  # Speculative decoding: draft model step
-VERIFY_DELAY = 500  # Speculative decoding: verify (full model forward)
-ACCEPT_DELAY = 50  # Speculative decoding: per-token accept/commit
-BLOCK_DELAY = 500  # Mixture of Depths: transformer block (attn+FFN)
-MOD_ROUTER_DELAY = 50  # Mixture of Depths: per-layer router
-MERGE_DELAY = 50  # Mixture of Depths: residual merge
-DEFAULT_DELAY = 100  # Fallback for unnamed tasks
+# ─── Delay Parameters ──────────────────────────────────────
+# Loaded from hw_profiles.py.  Use --profile=calibrated to switch
+# to simulation-calibrated numbers once available.
+from hw_profiles import get_profile, ProfileSet
+
+_profile: ProfileSet = get_profile("synthetic")  # overridden by --profile flag
+
+EXPERT_DELAY    = _profile.moe.expert_delay
+ROUTER_DELAY    = _profile.moe.router_delay
+AGGREGATOR_DELAY = _profile.moe.aggregator_delay
+INPUT_DELAY     = _profile.moe.input_delay
+STAGE_DELAY     = _profile.early_exit.stage_delay
+CLASSIFIER_DELAY = _profile.early_exit.classifier_delay
+DRAFT_DELAY     = _profile.spec_decode.draft_delay
+VERIFY_DELAY    = _profile.spec_decode.verify_delay
+ACCEPT_DELAY    = _profile.spec_decode.accept_delay
+BLOCK_DELAY     = _profile.mod.block_delay
+MOD_ROUTER_DELAY = _profile.mod.router_delay
+MERGE_DELAY     = _profile.mod.merge_delay
+DEFAULT_DELAY   = 100  # Fallback for unnamed tasks
+
+
+def _reload_delays():
+    """Re-read module-level delay constants from the active profile."""
+    global EXPERT_DELAY, ROUTER_DELAY, AGGREGATOR_DELAY, INPUT_DELAY
+    global STAGE_DELAY, CLASSIFIER_DELAY
+    global DRAFT_DELAY, VERIFY_DELAY, ACCEPT_DELAY
+    global BLOCK_DELAY, MOD_ROUTER_DELAY, MERGE_DELAY
+    EXPERT_DELAY     = _profile.moe.expert_delay
+    ROUTER_DELAY     = _profile.moe.router_delay
+    AGGREGATOR_DELAY = _profile.moe.aggregator_delay
+    INPUT_DELAY      = _profile.moe.input_delay
+    STAGE_DELAY      = _profile.early_exit.stage_delay
+    CLASSIFIER_DELAY = _profile.early_exit.classifier_delay
+    DRAFT_DELAY      = _profile.spec_decode.draft_delay
+    VERIFY_DELAY     = _profile.spec_decode.verify_delay
+    ACCEPT_DELAY     = _profile.spec_decode.accept_delay
+    BLOCK_DELAY      = _profile.mod.block_delay
+    MOD_ROUTER_DELAY = _profile.mod.router_delay
+    MERGE_DELAY      = _profile.mod.merge_delay
 
 
 # ════════════════════════════════════════════════════════════
@@ -124,6 +150,7 @@ def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
                 assigned_chiplet_id=node.assigned_chiplet_id,
                 assigned_cluster_id=node.assigned_cluster_id,
                 assigned_core_id=node.assigned_core_id,
+                slot_id=node.slot_id if node.slot_id >= 0 else node.assigned_core_id,
                 dep_check_en=node.dep_check_enable,
                 dep_check_code=_bitmask(node.dep_check_list),
                 dep_set_en=node.dep_set_enable,
@@ -913,6 +940,232 @@ def _print_table(title, rows, columns):
 
 
 # ════════════════════════════════════════════════════════════
+#  Experiment 8 — Dispatch Policy Comparison
+# ════════════════════════════════════════════════════════════
+
+
+def experiment_dispatch_policies(output_dir, verbose=True):
+    """Compare static vs dynamic dispatch policies on MoE workloads.
+
+    Uses n_cores >= n_experts so each expert has a unique core,
+    avoiding the bitmask ambiguity in dependency code rewriting.
+    This matches the natural hardware target: enough cores to run
+    all experts in parallel when activated.
+    """
+    configs = [
+        # (n_experts, n_clusters, n_cores, label)
+        (4, 1, 4, "N4_4co"),   # 4 experts, 4 cores → 1:1
+        (8, 1, 8, "N8_8co"),   # 8 experts, 8 cores → 1:1 (like GPU SMs)
+    ]
+    top_k_list = [1, 2, 4]
+    rows = []
+
+    policies = [
+        ("static", DispatchPolicy.STATIC),
+        ("round_robin", DispatchPolicy.ROUND_ROBIN),
+        ("load_balance", DispatchPolicy.LOAD_BALANCE),
+        ("cond_aware", DispatchPolicy.COND_AWARE),
+    ]
+
+    for n_experts, n_cl, n_co, hw_label in configs:
+        for k in top_k_list:
+            if k >= n_experts:
+                continue
+
+            # Static-all baseline (all experts active, STATIC dispatch)
+            dfg_s, _, wd_s = make_moe_dfg(n_experts, 1, n_cl, n_co)
+            compile_dfg(dfg_s)
+            static_ref = run_sim(dfg_s, SimConfig(
+                num_chiplets=1,
+                num_clusters_per_chiplet=n_cl,
+                num_cores_per_cluster=n_co,
+                work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
+                random_seed=42,
+            ), None, wd_s, label="static_all")
+            static_latency = static_ref.latency
+
+            for policy_name, policy_enum in policies:
+                sim_config = SimConfig(
+                    num_chiplets=1,
+                    num_clusters_per_chiplet=n_cl,
+                    num_cores_per_cluster=n_co,
+                    work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
+                    random_seed=42,
+                    dispatch_policy=policy_enum,
+                )
+
+                dfg, experts, wd = make_moe_dfg(n_experts, 1, n_cl, n_co)
+                compile_dfg(dfg)
+                active = set(experts[:k])
+                result = run_sim(dfg, sim_config, active, wd,
+                                 label=f"{policy_name}_{hw_label}_k{k}")
+
+                speedup = static_latency / max(result.latency, 1)
+
+                if verbose:
+                    print(f"  [{hw_label}] k={k}, {policy_name:15s}: "
+                          f"latency={result.latency:>5}, speedup={speedup:.2f}x, "
+                          f"skip={result.tasks_skipped}, "
+                          f"util={result.avg_utilization:.1%}, "
+                          f"{'DEADLOCK!' if result.deadlock else 'OK'}")
+
+                rows.append({
+                    "hw": hw_label, "n_experts": n_experts, "top_k": k,
+                    "policy": policy_name,
+                    "latency": result.latency,
+                    "speedup": f"{speedup:.2f}",
+                    "tasks_skipped": result.tasks_skipped,
+                    "utilization": f"{result.avg_utilization:.4f}",
+                    "deadlock": result.deadlock,
+                })
+
+    _save_csv(os.path.join(output_dir, "dispatch_policies.csv"), rows)
+    return rows
+
+
+# ════════════════════════════════════════════════════════════
+#  Experiment 9 — RL Learning Curve
+# ════════════════════════════════════════════════════════════
+
+
+def experiment_rl_learning(output_dir, verbose=True):
+    """Multi-batch RL learning curve: show the RL agent improves over time.
+
+    Runs N batches of MoE inference with the same RL agent.  Each batch
+    activates a random top-k subset of experts.  The RL agent's Q-table
+    persists across batches, so it learns the workload's routing patterns.
+
+    Also tests distribution shift: after batch 50, change the activation
+    distribution and measure how quickly the RL adapts.
+    """
+    import sys
+    sw_dir = os.path.join(_root, "sw")
+    if sw_dir not in sys.path:
+        sys.path.insert(0, sw_dir)
+    from bingo_rl_scheduler import RLScheduler, RLConfig
+
+    n_experts = 8
+    top_k = 2
+    n_cl, n_co = 1, 4
+    n_batches = 30
+    shift_at = 20  # Distribution shift at this batch
+    rows = []
+
+    rng = __import__("random").Random(42)
+
+    # ── Static baseline (single batch, all experts) ──
+    dfg_s, _, wd_s = make_moe_dfg(n_experts, 1, n_cl, n_co)
+    compile_dfg(dfg_s)
+    static_ref = run_sim(dfg_s, SimConfig(
+        num_chiplets=1, num_clusters_per_chiplet=n_cl,
+        num_cores_per_cluster=n_co,
+        work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY), random_seed=42,
+    ), None, wd_s, label="static_all")
+    static_latency = static_ref.latency
+
+    # ── RL learning loop ──
+    rl = RLScheduler(num_cores=n_co, config=RLConfig(
+        alpha=0.15, epsilon=0.1, warm_start_value=50,
+    ), rng=rng)
+
+    for batch in range(n_batches):
+        # Select random top-k experts
+        if batch < shift_at:
+            # Phase 1: uniform random top-k
+            active_indices = sorted(rng.sample(range(n_experts), top_k))
+        else:
+            # Phase 2 (distribution shift): always activate experts 0,1
+            active_indices = [0, 1]
+
+        # Build + compile DFG
+        dfg, experts, wd = make_moe_dfg(n_experts, 1, n_cl, n_co)
+        compile_dfg(dfg)
+        active = set(experts[i] for i in active_indices)
+
+        # Run with RL dispatch — the RL agent persists across batches
+        config = SimConfig(
+            num_chiplets=1, num_clusters_per_chiplet=n_cl,
+            num_cores_per_cluster=n_co,
+            work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
+            random_seed=42,
+            dispatch_policy=DispatchPolicy.RL_HEFT,
+        )
+        # Manually create simulator and inject the persistent RL agent
+        from model.bingo_sim import BingoSimulator
+        sim = BingoSimulator(config)
+        # Replace the auto-created RL with our persistent one
+        sim.rl_scheduler = rl
+        for chiplet in sim.chiplets.values():
+            chiplet.rl_scheduler = rl
+
+        per_chiplet = dfg_to_task_descriptors(dfg, wd, active)
+        # Warm-start only on first batch
+        if batch == 0:
+            for chip_id, tasks in per_chiplet.items():
+                rl.warm_start_from_placement(tasks)
+
+        sim._task_lists = {c: list(t) for c, t in per_chiplet.items()}
+        for c in sim._task_lists:
+            sim._push_idx[c] = 0
+            sim._push_timer[c] = 0
+            for t in sim._task_lists[c]:
+                if t.task_type in (0, 2):
+                    sim._all_task_ids.add(t.task_id)
+
+        result = sim.run()
+        latency = result.total_latency
+        speedup = static_latency / max(latency, 1)
+        n_skip = sum(1 for e in result.trace.events if e.event_type == "TASK_SKIPPED")
+
+        # Also run static dispatch for comparison
+        dfg2, experts2, wd2 = make_moe_dfg(n_experts, 1, n_cl, n_co)
+        compile_dfg(dfg2)
+        active2 = set(experts2[i] for i in active_indices)
+        static_r = run_sim(dfg2, SimConfig(
+            num_chiplets=1, num_clusters_per_chiplet=n_cl,
+            num_cores_per_cluster=n_co,
+            work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
+            random_seed=42,
+        ), active2, wd2, label=f"static_b{batch}")
+
+        phase = "shift" if batch >= shift_at else "normal"
+
+        if verbose:
+            print(f"  Batch {batch:3d} [{phase:6s}] active={active_indices}: "
+                  f"RL={latency:>5} static={static_r.latency:>5} "
+                  f"skip={n_skip} "
+                  f"RL_speedup={speedup:.2f}x "
+                  f"{'DEADLOCK!' if result.deadlock_detected else 'OK'}")
+
+        rows.append({
+            "batch": batch, "phase": phase,
+            "active_experts": str(active_indices),
+            "rl_latency": latency,
+            "static_latency": static_r.latency,
+            "rl_speedup": f"{speedup:.2f}",
+            "static_speedup": f"{static_latency / max(static_r.latency, 1):.2f}",
+            "tasks_skipped": n_skip,
+            "q_nonzero": rl.q_table_stats()["nonzero_entries"],
+            "deadlock": result.deadlock_detected,
+        })
+
+        # Reset simulator state for next batch (but keep RL agent)
+        sim._all_task_ids = set()
+        sim._completed_tasks = set()
+
+    if verbose:
+        stats = rl.q_table_stats()
+        print(f"\n  RL Stats: {stats['batches_trained']} batches, "
+              f"{stats['total_decisions']} decisions, "
+              f"{stats['nonzero_entries']}/{stats['total_entries']} Q-entries used, "
+              f"Q range [{stats['min_q']}, {stats['max_q']}], "
+              f"table size {stats['table_bytes']} bytes")
+
+    _save_csv(os.path.join(output_dir, "rl_learning_curve.csv"), rows)
+    return rows
+
+
+# ════════════════════════════════════════════════════════════
 #  Main
 # ════════════════════════════════════════════════════════════
 
@@ -925,18 +1178,31 @@ def main():
     parser.add_argument("--spec-decode", action="store_true", help="Speculative decoding only")
     parser.add_argument("--mod", action="store_true", help="Mixture of Depths only")
     parser.add_argument("--auto-sched", action="store_true", help="Auto-scheduling comparison only")
+    parser.add_argument("--dispatch", action="store_true", help="Dispatch policy comparison only")
+    parser.add_argument("--rl", action="store_true", help="RL learning curve only")
     parser.add_argument("--output", default=None, help="Output directory")
+    parser.add_argument("--profile", default="synthetic",
+                        choices=["synthetic", "calibrated"],
+                        help="Latency profile: 'synthetic' (magic numbers) "
+                             "or 'calibrated' (from ZigZag/SNAX simulation)")
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args()
 
+    # ── Load selected profile ──
+    global _profile
+    _profile = get_profile(args.profile)
+    _reload_delays()
+
     run_all = not (args.moe or args.early_exit or args.sweep
-                   or args.spec_decode or args.mod or args.auto_sched)
+                   or args.spec_decode or args.mod or args.auto_sched
+                   or args.dispatch or args.rl)
     verbose = not args.quiet
     output_dir = args.output or os.path.join(_root, "eval_results")
     os.makedirs(output_dir, exist_ok=True)
 
     print("DARTS Evaluation Suite")
     print(f"Output: {output_dir}")
+    print(f"Profile: {_profile.name}")
     print(f"Delays: expert={EXPERT_DELAY}, router={ROUTER_DELAY}, "
           f"aggregator={AGGREGATOR_DELAY}, input={INPUT_DELAY}")
 
@@ -1022,6 +1288,30 @@ def main():
             "Auto-Scheduling Results", rows,
             ["layers", "placement", "static_latency", "darts_latency",
              "speedup", "tasks_skipped", "deadlock"],
+        )
+
+    # ── Experiment 8: Dispatch policy comparison ──
+    if run_all or args.dispatch:
+        print(f"\n{'─' * 78}")
+        print("  Experiment 8: Dispatch Policy Comparison  (STATIC vs LOAD_BALANCE vs COND_AWARE)")
+        print(f"{'─' * 78}")
+        rows = experiment_dispatch_policies(output_dir, verbose)
+        _print_table(
+            "Dispatch Policy Results", rows,
+            ["n_experts", "top_k", "policy", "latency", "speedup",
+             "tasks_skipped", "utilization", "deadlock"],
+        )
+
+    # ── Experiment 9: RL learning curve ──
+    if run_all or args.rl:
+        print(f"\n{'─' * 78}")
+        print("  Experiment 9: RL Learning Curve  (30 batches, shift at batch 20)")
+        print(f"{'─' * 78}")
+        rows = experiment_rl_learning(output_dir, verbose)
+        _print_table(
+            "RL Learning Curve", rows,
+            ["batch", "phase", "active_experts", "rl_latency",
+             "static_latency", "rl_speedup", "tasks_skipped", "deadlock"],
         )
 
     print(f"\n{'=' * 78}")

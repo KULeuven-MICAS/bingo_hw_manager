@@ -25,3 +25,6 @@ __pycache__/
 
 # Documentation (tracked in dev branch only)
 dev_doc/
+
+# vsim
+work

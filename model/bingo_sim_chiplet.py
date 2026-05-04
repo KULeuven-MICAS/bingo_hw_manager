@@ -38,6 +38,8 @@ class TaskDescriptor:
     cond_exec_en: bool = False
     cond_exec_group_id: int = 0
     cond_exec_invert: bool = False
+    # Logical slot for dependency tracking (decoupled from physical core_id)
+    slot_id: int = -1
     # Per-task fixed delay (cycles); None → use config work_delay_range
     work_delay: Optional[int] = None
     # Bitmask: CERF groups to activate on completion (gating tasks only)
@@ -49,6 +51,7 @@ class TaskDescriptor:
 @dataclass
 class DoneInfo:
     task_id: int
+    slot_id: int
     assigned_core_id: int
     assigned_cluster_id: int
 
@@ -58,6 +61,15 @@ class DepCheckState(IntEnum):
     WAIT_DEP_CHECK = 1
     WAIT_QUEUES = 2
     FINISH = 3
+
+
+class DispatchPolicy(IntEnum):
+    """Task dispatcher policy — selects how tasks are routed to cores."""
+    STATIC = 0       # Use compiled assigned_core_id (current behavior)
+    ROUND_ROBIN = 1  # Cycle through cores
+    LOAD_BALANCE = 2 # Route to core with fewest pending tasks
+    COND_AWARE = 3   # Load balance + pack mutually-exclusive conditional tasks
+    RL_HEFT = 4      # Q-learning with HEFT warm-start
 
 
 class ChipletModel:
@@ -75,6 +87,7 @@ class ChipletModel:
         checkout_queue_depth: int = 8,
         done_queue_depth: int = 32,
         done_queue_mode: Literal["single", "per_core"] = "single",
+        dispatch_policy: DispatchPolicy = DispatchPolicy.STATIC,
     ):
         self.chiplet_id = chiplet_id
         self.num_clusters = num_clusters
@@ -82,6 +95,7 @@ class ChipletModel:
         self.rng = rng
         self.done_queue_mode = done_queue_mode
         self.work_delay_range = work_delay_range
+        self.dispatch_policy = dispatch_policy
 
         # Task queue (from host)
         self.task_queue = FifoQueue("task_q", 32)
@@ -147,6 +161,19 @@ class ChipletModel:
         # Flux Tier 1: Conditional Execution Register File (32 groups)
         self.cerf: list[bool] = [False] * 32
 
+        # ── Task Dispatcher (GPU-style command processor) ──────
+        # Load monitor: per-(core, cluster) pending counters (mirrors RTL)
+        self.pending_count: list[list[int]] = [
+            [0] * num_cores for _ in range(num_clusters)
+        ]
+        # Round-robin counter for ROUND_ROBIN policy
+        self._rr_core: int = 0
+        # Per-core expected load for COND_AWARE policy (tracks expected
+        # work units, not just pending count)
+        self.expected_load: list[float] = [0.0] * num_cores
+        # RL scheduler (injected by BingoSimulator when policy=RL_HEFT)
+        self.rl_scheduler = None
+
     def cerf_write_mask(self, mask: int):
         """Write the full CERF bitmask (called by host/gating core)."""
         for i in range(32):
@@ -181,13 +208,27 @@ class ChipletModel:
         events = []
 
         # ================================================================
-        # Phase 1a: Task queue → one task into waiting queues
+        # Phase 1a: Task queue → dispatcher → one task into waiting queues
+        # For STATIC + batch-dispatched policies: assigned_core_id is
+        # already correct (rewritten in load_tasks).
+        # For RL_HEFT: the RL agent makes per-task decisions HERE using
+        # live load monitor state.
         # ================================================================
         if not self.task_queue.empty:
             task = self.task_queue.peek()
-            core = task.assigned_core_id
+            if self.dispatch_policy == DispatchPolicy.RL_HEFT and task.task_type != 1:
+                core = self._dispatch(task)
+            else:
+                core = task.assigned_core_id
             if not self.waiting_queues[core].full:
                 self.task_queue.pop()
+                if core != task.assigned_core_id:
+                    from dataclasses import replace
+                    task = replace(task, assigned_core_id=core)
+                # Ensure slot_id is valid (fallback to core_id for backward compat)
+                if task.slot_id < 0:
+                    from dataclasses import replace
+                    task = replace(task, slot_id=task.assigned_core_id)
                 self.waiting_queues[core].push(task)
 
         # ================================================================
@@ -245,7 +286,7 @@ class ChipletModel:
                 self.dep_check_fsm[core] = DepCheckState.WAIT_QUEUES
             else:
                 cluster = task.assigned_cluster_id
-                result = self.dep_matrices[cluster].check_row(core, task.dep_check_code)
+                result = self.dep_matrices[cluster].check_row(task.slot_id, task.dep_check_code)
                 if result:
                     self.dep_check_fsm[core] = DepCheckState.WAIT_QUEUES
 
@@ -271,7 +312,7 @@ class ChipletModel:
 
             # DEFER dep_matrix clear — will be applied after dep_set in tick()
             if task.dep_check_en:
-                self._pending_clears.append((cluster, core, task.dep_check_code))
+                self._pending_clears.append((cluster, task.slot_id, task.dep_check_code))
 
             # Flux Tier 1: CERF conditional skip check
             cond_skip = False
@@ -401,17 +442,24 @@ class ChipletModel:
             if dq.empty:
                 return dq, None
             head = dq.peek()
-            if head.assigned_core_id == core and head.assigned_cluster_id == cluster:
-                return dq, head
+            # Match on slot_id (logical) instead of core_id (physical)
+            cq = self.checkout_queues[core][cluster]
+            if not cq.empty:
+                checkout_task = cq.peek()
+                if head.slot_id == checkout_task.slot_id and head.assigned_cluster_id == cluster:
+                    return dq, head
             return dq, None  # HOL blocked
         else:
             dq = self.done_queues[core]
             if dq.empty:
                 return dq, None
             head = dq.peek()
-            if head.assigned_cluster_id == cluster:
-                return dq, head
-            return dq, None  # Cluster mismatch
+            cq = self.checkout_queues[core][cluster]
+            if not cq.empty:
+                checkout_task = cq.peek()
+                if head.slot_id == checkout_task.slot_id and head.assigned_cluster_id == cluster:
+                    return dq, head
+            return dq, None  # Slot/cluster mismatch
 
     def _fire_dep_set(self, task, cq, dq, cycle) -> list[SimEvent]:
         """Fire a dep_set operation. Returns events or None if overlap blocks it."""
@@ -422,9 +470,9 @@ class ChipletModel:
         source_core = task.assigned_core_id
 
         if target_chiplet == self.chiplet_id and not task.dep_set_all_chiplet:
-            # Local: try dep_matrix set_column
+            # Local: try dep_matrix set_column (indexed by slot_id)
             success = self.dep_matrices[target_cluster].set_column(
-                source_core, dep_set_code
+                task.slot_id, dep_set_code
             )
             if not success:
                 return None  # Overlap → blocked, arbiter moves on
@@ -456,7 +504,7 @@ class ChipletModel:
                     "target_chiplet": target_chiplet,
                     "target_cluster": target_cluster,
                     "dep_set_code": dep_set_code,
-                    "source_core": source_core,
+                    "source_core": task.slot_id,  # Use slot_id for remote dep_matrix column
                     "broadcast": task.dep_set_all_chiplet,
                 },
             ))
@@ -503,8 +551,13 @@ class ChipletModel:
                                 },
                             ))
 
-                        # Push to done queue
-                        done_info = DoneInfo(task_id, co, cl)
+                        # Load monitor: decrement pending count
+                        if self.pending_count[cl][co] > 0:
+                            self.pending_count[cl][co] -= 1
+
+                        # Push to done queue (slot_id from the completed task)
+                        completed_slot = completed_task.slot_id if completed_task else co
+                        done_info = DoneInfo(task_id, completed_slot, co, cl)
                         if self.done_queue_mode == "single":
                             self.done_queues[0].push(done_info)
                         else:
@@ -529,6 +582,11 @@ class ChipletModel:
                         self.core_task[cl][co] = task
                         self.core_countdown[cl][co] = delay
 
+                        # Load monitor: increment pending count
+                        self.pending_count[cl][co] = min(
+                            self.pending_count[cl][co] + 1, 255
+                        )
+
                         events.append(SimEvent(
                             time=cycle,
                             event_type="TASK_DISPATCHED",
@@ -538,6 +596,126 @@ class ChipletModel:
                             task_id=task.task_id,
                         ))
         return events
+
+    # ────────────────────────────────────────────────────────
+    # Task Dispatcher — GPU-style dynamic core assignment
+    # ────────────────────────────────────────────────────────
+
+    def _dispatch(self, task: TaskDescriptor) -> int:
+        """Select which core should execute *task*.
+
+        Mirrors the proposed ``bingo_hw_manager_task_dispatcher.sv``
+        hardware module.  The decision is combinational on the current
+        load monitor state and CERF.
+
+        Returns the target core index (0..num_cores-1).
+        """
+        if self.dispatch_policy == DispatchPolicy.STATIC:
+            return task.assigned_core_id
+
+        if self.dispatch_policy == DispatchPolicy.ROUND_ROBIN:
+            core = self._rr_core
+            self._rr_core = (self._rr_core + 1) % self.num_cores
+            return core
+
+        if self.dispatch_policy == DispatchPolicy.LOAD_BALANCE:
+            return self._select_least_loaded()
+
+        if self.dispatch_policy == DispatchPolicy.COND_AWARE:
+            return self._select_cond_aware(task)
+
+        if self.dispatch_policy == DispatchPolicy.RL_HEFT:
+            return self._select_rl_heft(task)
+
+        return task.assigned_core_id
+
+    def _select_least_loaded(self) -> int:
+        """Pick the core with the smallest total pending count across
+        all clusters.  Ties broken by lowest core index."""
+        best_core = 0
+        best_load = sum(self.pending_count[cl][0]
+                        for cl in range(self.num_clusters))
+        for co in range(1, self.num_cores):
+            load = sum(self.pending_count[cl][co]
+                       for cl in range(self.num_clusters))
+            if load < best_load:
+                best_load = load
+                best_core = co
+        return best_core
+
+    def _select_cond_aware(self, task: TaskDescriptor) -> int:
+        """Conditional-aware dispatch.
+
+        Key insight: conditional tasks that share a CERF group are
+        mutually exclusive — at most one executes per inference.
+        Packing them onto the same core is free in expectation.
+
+        1. If the task is conditional and its CERF group is **inactive**:
+           the task will be skipped → send to least-loaded core (skip
+           processing is cheap, ~5% of full delay).
+
+        2. If the task is conditional and its CERF group is **active**:
+           the task will execute → send to the core with the lowest
+           **expected** load (discounts conditional tasks by activation
+           probability).
+
+        3. If the task is unconditional: pure load-balance on pending
+           counts.
+        """
+        if not task.cond_exec_en:
+            # Unconditional: pure load balance
+            return self._select_least_loaded()
+
+        group_active = self.cerf[task.cond_exec_group_id]
+        if task.cond_exec_invert:
+            will_execute = not group_active
+        else:
+            will_execute = group_active
+
+        if not will_execute:
+            # Task will be skipped → cheap, send to least-loaded core
+            return self._select_least_loaded()
+
+        # Task will execute → find core with lowest expected load
+        best_core = 0
+        best_exp = self.expected_load[0]
+        for co in range(1, self.num_cores):
+            if self.expected_load[co] < best_exp:
+                best_exp = self.expected_load[co]
+                best_core = co
+        # Update expected load with this task's delay
+        delay = task.work_delay if task.work_delay is not None else 100
+        self.expected_load[best_core] += delay
+        return best_core
+
+    def _select_rl_heft(self, task: TaskDescriptor) -> int:
+        """RL-based dispatch using Q-learning agent.
+
+        The RL scheduler observes the current hardware state (load
+        monitor + CERF) and selects the best core using its learned
+        Q-table.  Falls back to load-balance if no RL scheduler is
+        attached.
+        """
+        if self.rl_scheduler is None:
+            return self._select_least_loaded()
+
+        # Aggregate pending counts per core (across clusters)
+        per_core = [
+            sum(self.pending_count[cl][co] for cl in range(self.num_clusters))
+            for co in range(self.num_cores)
+        ]
+
+        cerf_active = False
+        if task.cond_exec_en:
+            gid = task.cond_exec_group_id
+            if 0 <= gid < len(self.cerf):
+                cerf_active = self.cerf[gid]
+
+        return self.rl_scheduler.dispatch(
+            pending_counts=per_core,
+            cerf_active=cerf_active,
+            is_conditional=task.cond_exec_en,
+        )
 
     def receive_chiplet_dep_set(self, source_core_id, target_cluster_id, dep_set_code):
         """Queue an incoming H2H dep_set into the chiplet_done_queue."""

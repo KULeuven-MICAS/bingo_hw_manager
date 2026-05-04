@@ -32,11 +32,17 @@ from typing import Optional
 
 from bingo_dfg import BingoDFG
 from bingo_node import BingoNode
+from hw_profiles import get_profile, MoEProfile, EarlyExitProfile, SpecDecodeProfile
 
 
 # ════════════════════════════════════════════════════════════
 #  Model Descriptors
 # ════════════════════════════════════════════════════════════
+
+# Default latencies sourced from the active profile (synthetic fallback)
+_default_moe = get_profile("synthetic").moe
+_default_ee  = get_profile("synthetic").early_exit
+_default_sd  = get_profile("synthetic").spec_decode
 
 
 @dataclass
@@ -44,15 +50,15 @@ class MoELayerDescriptor:
     """Description of one MoE layer extracted from FX graph or config."""
     n_experts: int
     top_k: int
-    gate_latency: int = 50
-    expert_latency: int = 200
-    aggregator_latency: int = 100
+    gate_latency: int = _default_moe.router_delay
+    expert_latency: int = _default_moe.expert_delay
+    aggregator_latency: int = _default_moe.aggregator_delay
 
 
 @dataclass
 class AttentionDescriptor:
     """Placeholder for attention layer parameters."""
-    latency: int = 300
+    latency: int = _default_moe.attention_delay
 
 
 @dataclass
@@ -63,7 +69,7 @@ class ModelDescriptor:
     attention_layers: list[AttentionDescriptor] = field(default_factory=list)
     # Indices of layers that have MoE (vs dense FFN)
     moe_layer_indices: list[int] = field(default_factory=list)
-    input_latency: int = 50
+    input_latency: int = _default_moe.input_delay
     output_latency: int = 50
 
 
@@ -262,12 +268,13 @@ def from_mixtral_config(
     n_layers: int = 32,
     n_experts: int = 8,
     top_k: int = 2,
-    expert_latency: int = 200,
-    attention_latency: int = 300,
-    gate_latency: int = 50,
-    aggregator_latency: int = 100,
+    expert_latency: int = _default_moe.expert_delay,
+    attention_latency: int = _default_moe.attention_delay,
+    gate_latency: int = _default_moe.router_delay,
+    aggregator_latency: int = _default_moe.aggregator_delay,
     hw: Optional[ChipletConfig] = None,
     auto_place: bool = False,
+    profile: Optional[MoEProfile] = None,
 ) -> tuple[BingoDFG, DFGMeta]:
     """Generate a conditional DFG for a Mixtral-style MoE transformer.
 
@@ -283,6 +290,12 @@ def from_mixtral_config(
         per_chiplet = dfg_to_task_descriptors(dfg, dfg._work_delays, active)
     """
     hw = hw or ChipletConfig()
+    # If a profile object was passed, override individual latency args
+    if profile is not None:
+        expert_latency = profile.expert_delay
+        attention_latency = profile.attention_delay
+        gate_latency = profile.router_delay
+        aggregator_latency = profile.aggregator_delay
     desc = ModelDescriptor(
         n_layers=n_layers,
         moe_layers=[
@@ -300,14 +313,18 @@ def from_mixtral_config(
 
 def from_early_exit_config(
     n_layers: int = 12,
-    stage_latency: int = 200,
-    classifier_latency: int = 50,
+    stage_latency: int = _default_ee.stage_delay,
+    classifier_latency: int = _default_ee.classifier_delay,
     hw: Optional[ChipletConfig] = None,
+    profile: Optional[EarlyExitProfile] = None,
 ) -> tuple[BingoDFG, DFGMeta]:
     """Generate a conditional DFG for an early-exit classifier network.
 
     Each layer has a classifier that gates the next layer.
     """
+    if profile is not None:
+        stage_latency = profile.stage_delay
+        classifier_latency = profile.classifier_delay
     hw = hw or ChipletConfig()
     dfg = BingoDFG()
     meta = DFGMeta()
@@ -353,12 +370,17 @@ def from_early_exit_config(
 
 def from_spec_decode_config(
     n_draft: int = 5,
-    draft_latency: int = 100,
-    verify_latency: int = 500,
-    accept_latency: int = 50,
+    draft_latency: int = _default_sd.draft_delay,
+    verify_latency: int = _default_sd.verify_delay,
+    accept_latency: int = _default_sd.accept_delay,
     hw: Optional[ChipletConfig] = None,
+    profile: Optional[SpecDecodeProfile] = None,
 ) -> tuple[BingoDFG, DFGMeta]:
     """Generate a conditional DFG for speculative decoding."""
+    if profile is not None:
+        draft_latency = profile.draft_delay
+        verify_latency = profile.verify_delay
+        accept_latency = profile.accept_delay
     hw = hw or ChipletConfig()
     dfg = BingoDFG()
     meta = DFGMeta()

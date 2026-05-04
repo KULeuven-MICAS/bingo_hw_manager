@@ -69,6 +69,7 @@ typedef logic [ChipIdWidth-1:0]                                      bingo_hw_ma
 typedef logic [cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] bingo_hw_manager_assigned_cluster_id_t;
 typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    bingo_hw_manager_assigned_core_id_t;
 typedef logic [NUM_CORES_PER_CLUSTER-1:0]                            bingo_hw_manager_dep_code_t;
+typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    bingo_hw_manager_slot_id_t;
 
 typedef struct packed {
     bingo_hw_manager_dep_code_t                  dep_check_code;
@@ -94,6 +95,7 @@ typedef struct packed {
     logic                                        cond_exec_en;
     logic [4:0]                                  cond_exec_group_id;
     logic                                        cond_exec_invert;
+    bingo_hw_manager_slot_id_t                   slot_id;
 } bingo_hw_manager_task_desc_t;
 
 localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
@@ -118,11 +120,13 @@ typedef struct packed {
     logic                                        cond_exec_en;
     logic [4:0]                                  cond_exec_group_id;
     logic                                        cond_exec_invert;
+    bingo_hw_manager_slot_id_t                   slot_id;
 } bingo_hw_manager_task_desc_full_t;
 
 typedef struct packed {
     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
     bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+    bingo_hw_manager_slot_id_t                 slot_id;
     bingo_hw_manager_task_id_t                 task_id;
 } bingo_hw_manager_done_info_t;
 
@@ -140,6 +144,7 @@ typedef struct packed {
     logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
     bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+    bingo_hw_manager_slot_id_t                 slot_id;
     bingo_hw_manager_task_id_t                 task_id;
 } bingo_hw_manager_done_info_full_t;
 
@@ -197,6 +202,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.slot_id                          = assigned_core_id; // Identity: slot = core (static dispatch)
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -222,6 +228,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.slot_id                          = assigned_core_id; // Identity: slot = core
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -253,6 +260,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.slot_id                          = assigned_core_id; // Identity: slot = core
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -657,6 +665,9 @@ task automatic core_worker(
         done_info.task_id            = data[TaskIdWidth-1:0];
         done_info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
         done_info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
+        // Phase 0: slot_id == assigned_core_id (identity mapping). Tests with slot != core
+        // will override this field explicitly from the task generator.
+        done_info.slot_id             = bingo_hw_manager_slot_id_t'(core);
         done_info.reserved_bits       = '0;
         done_payload = device_axi_lite_data_t'(done_info);
 

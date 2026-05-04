@@ -17,6 +17,7 @@ class BingoNode(metaclass=ABCMeta):
         self._assigned_chiplet_id = assigned_chiplet_id
         self._assigned_cluster_id = assigned_cluster_id
         self._assigned_core_id = assigned_core_id
+        self._slot_id: int = -1  # Logical slot for dependency tracking (decoupled from core_id)
         self._node_type: Literal['normal', 'dummy', 'gating'] = "normal"
         self._dep_check_enable: bool = False
         self._dep_check_list: list[int] = []
@@ -72,6 +73,14 @@ class BingoNode(metaclass=ABCMeta):
     @assigned_core_id.setter
     def assigned_core_id(self, value: int) -> None:
         self._assigned_core_id = value
+
+    @property
+    def slot_id(self) -> int:
+        return self._slot_id
+
+    @slot_id.setter
+    def slot_id(self, value: int) -> None:
+        self._slot_id = value
 
     @property
     def node_type(self) -> Literal['normal', 'dummy', 'gating']:

@@ -150,7 +150,11 @@ module bingo_hw_manager_top #(
         logic                                        dep_set_en;
     } bingo_hw_manager_dep_set_info_t;
 
-    // Task info struct (DARTS: includes conditional execution fields)
+    // Logical slot ID — decoupled from physical core_id for dependency tracking.
+    // dep_check/dep_set codes reference slot_id; the dispatcher maps slot→core at runtime.
+    typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] bingo_hw_manager_slot_id_t;
+
+    // Task info struct (DARTS: includes conditional execution + slot_id fields)
     typedef struct packed{
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
@@ -163,6 +167,8 @@ module bingo_hw_manager_top #(
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
+        // DARTS Tier 2: Task-Slot Scoreboard (decoupled from physical core_id)
+        bingo_hw_manager_slot_id_t                   slot_id;
     } bingo_hw_manager_task_desc_t;
 
     localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
@@ -187,12 +193,15 @@ module bingo_hw_manager_top #(
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
+        // DARTS Tier 2: Task-Slot Scoreboard
+        bingo_hw_manager_slot_id_t                   slot_id;
     } bingo_hw_manager_task_desc_full_t;
 
-    // Done info struct
+    // Done info struct (DARTS Tier 2: includes slot_id for scoreboard matching)
     typedef struct packed{
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
         bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_slot_id_t                 slot_id;
         bingo_hw_manager_task_id_t                 task_id;
     } bingo_hw_manager_done_info_t;
 
@@ -209,6 +218,7 @@ module bingo_hw_manager_top #(
         logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
         bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_slot_id_t                 slot_id;
         bingo_hw_manager_task_id_t                 task_id;
     } bingo_hw_manager_done_info_full_t;
 
@@ -462,6 +472,22 @@ module bingo_hw_manager_top #(
                                         cerf_group_active_for_core : !cerf_group_active_for_core);
     end
 
+    // DARTS Tier 2: Task-Slot Scoreboard (slot->core forward, core->slot inverse)
+    ///////////////////////////////////////
+    // Per-cluster write port
+    logic                              [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_we;
+    bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_write_slot;
+    bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_write_core;
+    // Inverse-view read port (one per cluster, driven by physical core_id)
+    bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_inv_read_core;
+    bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_inv_read_slot;
+    // Forward-view read port (unused in Phase 1, reserved for future fault-recovery)
+    bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_slot;
+    bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_core;
+    logic                              [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_valid;
+    // Full inverse-table (per cluster): scoreboard_inv_table[cluster][core] = slot_id
+    bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0] scoreboard_inv_table;
+
     // PM signals
     ///////////////////////////////////////
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
@@ -553,6 +579,8 @@ module bingo_hw_manager_top #(
     assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
     assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
     assign cur_task_desc.cond_exec_invert = cur_task_desc_full.cond_exec_invert;
+    // DARTS Tier 2: propagate logical slot_id through the pipeline
+    assign cur_task_desc.slot_id = cur_task_desc_full.slot_id;
 
 
     /////////////////////////////////////////////////////////
@@ -606,6 +634,11 @@ module bingo_hw_manager_top #(
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].assigned_chiplet_id = checkout_queue_data_out[core][cluster].assigned_chiplet_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_id = checkout_queue_data_out[core][cluster].task_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_type = checkout_queue_data_out[core][cluster].task_type;
+                // Propagate CERF + slot_id fields across chiplets — required for slot-indexed dep_matrix at the receiver
+                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].cond_exec_en = checkout_queue_data_out[core][cluster].cond_exec_en;
+                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].cond_exec_group_id = checkout_queue_data_out[core][cluster].cond_exec_group_id;
+                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].cond_exec_invert = checkout_queue_data_out[core][cluster].cond_exec_invert;
+                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].slot_id = checkout_queue_data_out[core][cluster].slot_id;
                 stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][1];
             end           
         end
@@ -759,12 +792,79 @@ module bingo_hw_manager_top #(
         );
     end
 
+    //////////////////////////////////////////////////////////////////////
+    // DARTS Tier 2: Task-Slot Scoreboard (one per cluster)
+    //
+    // Write trigger: any waiting_dep_check_queue_push[*] whose target cluster
+    // matches this scoreboard. All per-core pushes in a cycle share the same
+    // `cur_task_desc` (stream_demux_core_type selects exactly one core), so we
+    // can pull write_slot / write_core straight from cur_task_desc.
+    //
+    // In Phase 1 `reassign_*` is tied off; Phase 2 (fault recovery) will drive
+    // these ports from a host-visible CSR.
+    //////////////////////////////////////////////////////////////////////
+    for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_scoreboard
+        assign scoreboard_we[cluster] =
+            (|waiting_dep_check_queue_push) &&
+            (cur_task_desc.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cluster));
+        assign scoreboard_write_slot[cluster] = cur_task_desc.slot_id;
+        assign scoreboard_write_core[cluster] = cur_task_desc.assigned_core_id;
+        // Forward-view + scalar inverse read ports are unused in Phase 1 — tie off.
+        assign scoreboard_read_slot[cluster]     = '0;
+        assign scoreboard_inv_read_core[cluster] = '0;
+
+        bingo_hw_manager_scoreboard #(
+            .NUM_SLOTS (NUM_CORES_PER_CLUSTER),
+            .slot_id_t (bingo_hw_manager_slot_id_t),
+            .core_id_t (bingo_hw_manager_assigned_core_id_t)
+        ) i_scoreboard (
+            .clk_i            (clk_i                            ),
+            .rst_ni           (rst_ni                           ),
+            .we_i             (scoreboard_we[cluster]           ),
+            .write_slot_i     (scoreboard_write_slot[cluster]   ),
+            .write_core_i     (scoreboard_write_core[cluster]   ),
+            // Phase 2 fault-recovery hook — tied off
+            .reassign_valid_i (1'b0                             ),
+            .reassign_slot_i  ('0                               ),
+            .reassign_core_i  ('0                               ),
+            // Forward read (unused in Phase 1)
+            .read_slot_i      (scoreboard_read_slot[cluster]    ),
+            .read_core_o      (scoreboard_read_core[cluster]    ),
+            .read_valid_o     (scoreboard_read_valid[cluster]   ),
+            // Inverse read (scalar — unused in Phase 1, full table drives done path)
+            .inv_read_core_i  (scoreboard_inv_read_core[cluster]),
+            .inv_read_slot_o  (scoreboard_inv_read_slot[cluster]),
+            // Full-table debug + full inverse table for done-path stamping
+            .table_core_o     (                                 ),
+            .table_valid_o    (                                 ),
+            .inv_table_o      (scoreboard_inv_table[cluster]    )
+        );
+    end
+
+    // Dep-matrix is indexed by logical slot_id (not physical core_id).
+    // For each requesting core c, the matrix row driven is task.slot_id;
+    // the check result is sampled back at the same slot row.
+    // Compiler invariant: at most one in-flight task per (cluster, slot) — to be guarded by SVA in Phase 1.
     always_comb begin : connect_dep_check_for_dep_matrix
         for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+            // Default: no request on any slot row
+            for ( int row = 0; row < NUM_CORES_PER_CLUSTER; row = row + 1) begin
+                dep_check_valid[cluster][row] = 1'b0;
+                dep_check_code [cluster][row] = '0;
+            end
+            // Per-core ready default
             for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                dep_check_valid[cluster][core] = demux_dep_matrix_oup_valid[core][cluster];
-                demux_dep_matrix_oup_ready[core][cluster] = dep_check_result[cluster][core];
-                dep_check_code[cluster][core] = waiting_dep_check_task_desc[core].dep_check_info.dep_check_code;
+                demux_dep_matrix_oup_ready[core][cluster] = 1'b0;
+            end
+            // Drive row = slot_id for each requesting core, sample ready back from the same row
+            for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+                automatic bingo_hw_manager_slot_id_t s;
+                s = waiting_dep_check_task_desc[core].slot_id;
+                if (demux_dep_matrix_oup_valid[core][cluster]) begin
+                    dep_check_valid[cluster][s] = 1'b1;
+                    dep_check_code [cluster][s] = waiting_dep_check_task_desc[core].dep_check_info.dep_check_code;
+                end
+                demux_dep_matrix_oup_ready[core][cluster] = dep_check_result[cluster][s];
             end
         end
     end
@@ -792,7 +892,8 @@ module bingo_hw_manager_top #(
             for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
                     stream_arbiter_inp_idx = core + cluster * NUM_CORES_PER_CLUSTER;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_id = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_cluster_id;
-                    stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col= core;
+                    // dep_matrix is slot-indexed: column = logical slot_id of the signaling task
+                    stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col= checkout_queue_data_out[core][cluster].slot_id;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
                     // Handshake from the checkout demux and the per-(core,cluster) done queue
                     // Dummy set: no done queue check needed
@@ -805,7 +906,8 @@ module bingo_hw_manager_top #(
         end
         // For Chiplet Set Queue
         stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_id  = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_cluster_id;
-        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_col = cur_chiplet_done_queue_task_desc.assigned_core_id;
+        // dep_matrix is slot-indexed: H2H remote dep_set column = logical slot_id carried in the cross-chiplet descriptor
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_col = cur_chiplet_done_queue_task_desc.slot_id;
         stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_set_code   = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_code;
         stream_arbiter_dep_matrix_set_inp_valid[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET] = !chiplet_done_queue_mbox_empty;
         stream_arbiter_dep_matrix_set_oup_ready = stream_demux_set_dep_matrix_cluster_id_inp_ready;
@@ -1096,14 +1198,27 @@ module bingo_hw_manager_top #(
 
     // Per-(core, cluster) done queue pop logic:
     // Pop when the checkout queue head for this (core, cluster) is a normal task
+    // AND the done-queue head's slot_id matches the checkout head's slot_id
     // AND the arbiter accepted the dep_set. No cross-core or cross-cluster blocking.
+    //
+    // Routing to per-(core, cluster) FIFOs stays physical (assigned_core_id / assigned_cluster_id).
+    // The slot_id check is the logical match key — matches Python golden at bingo_sim_chiplet.py:449/460.
+    // Back-compat: when slot_id == assigned_core_id (today's identity mapping), this check is
+    // trivially satisfied because the done arrived in done_q[core][cluster] only if its core_id==core.
     always_comb begin
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
                 // Normal (2'b00) and gating (2'b10) tasks need done_queue match
+                // Routing to per-(core, cluster) FIFOs is physical (by assigned_core_id / assigned_cluster_id).
+                // The slot_id equality check is the logical match key — ensures the head of this core's
+                // done queue corresponds to the task currently at the head of this core's checkout queue.
+                // Matches Python golden model at bingo_sim_chiplet.py:449/460.
+                // Back-compat: with slot_id == assigned_core_id (today's identity mapping), the check is
+                // trivially satisfied because the done arrived in done_q[core][cluster] only if its core_id == core.
                 done_q_pop[core][cluster] = !done_q_empty[core][cluster] &&
                     (checkout_queue_data_out[core][cluster].task_type == 2'b00 ||
                      checkout_queue_data_out[core][cluster].task_type == 2'b10) &&
+                    (done_q_info[core][cluster].slot_id == checkout_queue_data_out[core][cluster].slot_id) &&
                     stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
             end
         end
@@ -1130,6 +1245,8 @@ module bingo_hw_manager_top #(
         device_axi_lite_data_t write_done_queue_data;
         logic                  write_done_queue_valid;
         logic                  write_done_queue_ready;
+        // 1D slot_id view (from the per-cluster scoreboard inverse table)
+        bingo_hw_manager_slot_id_t [N_CORES_TOTAL-1:0] slot_id_1d;
 
 
         bingo_hw_manager_csr_to_fifo #(
@@ -1140,7 +1257,8 @@ module bingo_hw_manager_top #(
             .csr_req_t (csr_req_t),
             .csr_rsp_t (csr_rsp_t),
             .data_t    (device_axi_lite_data_t),
-            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t)
+            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t),
+            .bingo_hw_manager_slot_id_t (bingo_hw_manager_slot_id_t)
         ) i_bingo_hw_manager_csr_to_fifo (
             .csr_req_i         (csr_req_1d               ),
             .csr_req_valid_i   (csr_req_valid_1d         ),
@@ -1155,8 +1273,20 @@ module bingo_hw_manager_top #(
             // FIFO Write Interface
             .fifo_data_o       (write_done_queue_data_1d ),
             .fifo_data_valid_o (write_done_queue_valid_1d),
-            .fifo_data_ready_i (write_done_queue_ready_1d)
+            .fifo_data_ready_i (write_done_queue_ready_1d),
+            // Slot-id view driven by per-cluster scoreboard inverse table
+            .slot_id_i         (slot_id_1d               )
         );
+
+        // slot_id_1d[core + cluster*NUM_CORES_PER_CLUSTER] = scoreboard[cluster].inv_table[core]
+        // Uses the full inverse-table output from each per-cluster scoreboard.
+        always_comb begin : connect_scoreboard_inv_lookup
+            for (int unsigned co = 0; co < NUM_CORES_PER_CLUSTER; co = co + 1) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl = cl + 1) begin
+                    slot_id_1d[co + cl * NUM_CORES_PER_CLUSTER] = scoreboard_inv_table[cl][co];
+                end
+            end
+        end
         always_comb begin : connect_ready_queue_1d_to_2d
             for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
                 for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin

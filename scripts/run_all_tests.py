@@ -51,6 +51,7 @@ def dfg_to_task_descriptors(dfg, num_cores=3):
             assigned_chiplet_id=node.assigned_chiplet_id,
             assigned_cluster_id=node.assigned_cluster_id,
             assigned_core_id=node.assigned_core_id,
+            slot_id=node.slot_id if node.slot_id >= 0 else node.assigned_core_id,
             dep_check_en=node.dep_check_enable,
             dep_check_code=_list_to_bitmask(node.dep_check_list),
             dep_set_en=node.dep_set_enable,

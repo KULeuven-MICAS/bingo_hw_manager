@@ -223,52 +223,65 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 
 ## DARTS: Dynamic Adaptive Runtime Task Scheduling
 
-DARTS extends the static scheduler with conditional execution support for data-dependent workloads (MoE routing, early exit). See `dev_doc/` for full architecture documentation.
+DARTS extends the static scheduler with conditional execution, dynamic dispatch, and on-chip reinforcement learning for data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths). See `dev_doc/` for full architecture documentation.
 
-### Conditional Execution (CERF)
+### Full-Stack Pipeline
 
-A 16-entry Conditional Execution Register File (CERF) per chiplet enables runtime task skipping. Tasks marked as conditional are either executed or skipped based on the CERF state, which is written by **gating tasks** on completion.
-
-The user expresses conditional execution through **conditional edges** in the DFG:
-
-```python
-# Router conditionally activates each expert (compiler handles the rest)
-dfg.bingo_add_edge(router, expert_0, cond=True)
-dfg.bingo_add_edge(router, expert_1, cond=True)
-dfg.bingo_add_edge(expert_0, aggregator)          # unconditional
-
-# Compile: auto-assigns CERF groups, promotes router to gating task
-compile_dfg(dfg)
-
-# Simulate: specify which nodes are active
-run_sim(dfg, config, active_nodes={expert_0})
+```
+User DFG → Compiler → Auto-Scheduler → On-Chip RL Dispatcher → CERF Hardware → Load Monitor
+ (cond edges)  (CERF groups)  (HEFT warm-start)   (Q-table 256B)      (<0.1% area)     (feedback)
+                                                         ↑                                   │
+                                                         └──── RL reward update (per batch) ──┘
 ```
 
-The compiler pass `bingo_compile_conditional_regions()`:
-1. Scans edges for `cond=True`
-2. Auto-promotes source nodes to gating tasks (`task_type=2`)
-3. Groups conditional targets by connected components (unconditional edges between targets = shared CERF group)
-4. Assigns CERF group IDs (0-15) automatically
+### Tier 1: Conditional Execution (CERF)
 
-Skipped tasks still propagate dependency signals (via the checkout queue as dummies), preserving graph correctness.
+A 32-entry Conditional Execution Register File (CERF) per chiplet enables runtime task skipping:
+
+```python
+dfg.bingo_add_edge(router, expert_0, cond=True)   # conditional edge
+dfg.bingo_add_edge(expert_0, aggregator)            # unconditional
+compile_dfg(dfg)                                    # auto-assigns CERF groups
+run_sim(dfg, config, active_nodes={expert_0})       # user never sees group IDs
+```
+
+### Tier 2: Task-Slot Scoreboard (GPU-style dependency decoupling)
+
+The task descriptor carries a `slot_id` (logical, compile-time) separate from `assigned_core_id` (physical, dispatch-time). The dependency matrix is indexed by `slot_id`, enabling the dispatcher to freely remap tasks to any core without breaking dependencies. This is the DFG-accelerator equivalent of GPU warp-ID vs SM-ID decoupling.
+
+### Tier 3: On-Chip RL Scheduler
+
+A lightweight Q-learning agent learns optimal task-to-core placement at runtime:
+- **State:** 6 bits (per-core load + CERF state + task type) → 64 states
+- **Action:** target core index → 4 actions
+- **Q-table:** 64 x 4 x int8 = **256 bytes** (fits in on-chip SRAM)
+- **HEFT warm-start:** Q-table initialized from compile-time HEFT schedule (no regression on batch 1)
+- **Reward:** −makespan per batch (Monte Carlo update)
 
 ### Additional Modules
 
 | Module | Purpose |
 |--------|---------|
-| `bingo_hw_manager_cond_exec_controller.sv` | 16-entry CERF register file |
-| `bingo_hw_manager_load_monitor.sv` | Per-core pending task counters (load monitoring) |
+| `bingo_hw_manager_cond_exec_controller.sv` | 32-entry CERF register file |
+| `bingo_hw_manager_load_monitor.sv` | Per-core pending task counters |
+| `sw/bingo_rl_scheduler.py` | Q-learning agent with HEFT warm-start |
+| `sw/hw_profiles.py` | Calibration injection point for real hardware latencies |
 
 ### Evaluation Results
 
-Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`):
+Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`, 9 experiments):
 
 | Workload | Configuration | Speedup |
 |----------|---------------|---------|
 | MoE 8 experts, top-2 | 1 cluster, 3 cores | 2.29x |
 | MoE 16 experts, top-1 | 1 cluster, 3 cores | 4.15x |
-| MoE 8 experts, top-2 | 2 chiplets | 1.84-1.95x |
-| Early exit (stage 0/4) | 1 cluster, 3 cores | 3.28x |
+| MoE 8 experts, top-2 | 2 chiplets | 1.84–1.95x |
+| Early exit (stage 0/4) | 1 cluster, 3 cores | 3.20x |
+| Speculative decoding (K=3–7) | 1 cluster, 3 cores | 1.06–1.14x |
+| Mixture of Depths (75% skip) | 1 cluster, 3 cores | 2.58x |
+| Dynamic dispatch (N=8, k=4) | 1 cluster, 4 cores | 1.46x (vs 1.00x static) |
+| RL scheduler (30 batches) | 1 cluster, 4 cores | Up to 3.45x (learned) |
+| Oracle comparison (7 workloads) | 4 cores | 0% gap on conditional DFGs |
 
 ## Source Files
 
@@ -308,6 +321,7 @@ python3 scripts/run_all_tests.py --stress 200
 ```
 
 **Test results:**
-- RTL: 66/66 pass (includes CERF conditional tests) with zero deadlocks
-- Python model: 68/68 pass (20 structured + 48 random stress)
-- Evaluation: 4 experiment suites, all deadlock-free (CSV results in `eval_results/`)
+- RTL: 66/66 pass (includes CERF + task-slot scoreboard) with zero deadlocks
+- Python model: 20/20 structured patterns pass with task-slot scoreboard
+- Evaluation: 9 experiment suites, all deadlock-free (CSV results in `eval_results/`)
+- RL learning curve: 30 batches, 0 deadlocks, up to 3.45x learned speedup

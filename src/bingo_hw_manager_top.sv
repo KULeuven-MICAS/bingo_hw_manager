@@ -112,16 +112,14 @@ module bingo_hw_manager_top #(
     // AXI Lite Master Interface
     output host_axi_lite_req_t                  pm_axi_lite_req_o,
     input  host_axi_lite_resp_t                 pm_axi_lite_resp_i,
-    // DARTS: CERF (Conditional Execution Register File) interface
+    // CERF (Conditional Execution Register File) interface
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
-    output logic [31:0]                         cerf_state_o,
-    // DARTS: Load Monitor output (CSR readable)
-    output logic [10:0]                         load_total_pending_o
+    output logic [31:0]                         cerf_state_o
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
-    // Task Type (DARTS: expanded to 2 bits for gating support)
+    // Task Type (expanded to 2 bits for gating support)
     // 2'b00: Normal Task
     // 2'b01: Dummy Task (set/check synchronization)
     // 2'b10: Gating Task (executes on core, writes CERF on completion)
@@ -154,7 +152,7 @@ module bingo_hw_manager_top #(
     // dep_check/dep_set codes reference slot_id; the dispatcher maps slot→core at runtime.
     typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] bingo_hw_manager_slot_id_t;
 
-    // Task info struct (DARTS: includes conditional execution + slot_id fields)
+    // Task info struct (includes conditional execution + slot_id fields)
     typedef struct packed{
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
@@ -163,11 +161,11 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
-        // DARTS Tier 1: Conditional Execution
+        // Conditional Execution
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
-        // DARTS Tier 2: Task-Slot Scoreboard (decoupled from physical core_id)
+        // Task-Slot Scoreboard (decoupled from physical core_id)
         bingo_hw_manager_slot_id_t                   slot_id;
     } bingo_hw_manager_task_desc_t;
 
@@ -189,15 +187,15 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
-        // DARTS Tier 1: Conditional Execution
+        // Conditional Execution
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
-        // DARTS Tier 2: Task-Slot Scoreboard
+        // Task-Slot Scoreboard
         bingo_hw_manager_slot_id_t                   slot_id;
     } bingo_hw_manager_task_desc_full_t;
 
-    // Done info struct (DARTS Tier 2: includes slot_id for scoreboard matching)
+    // Done info struct (includes slot_id for scoreboard matching)
     typedef struct packed{
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
         bingo_hw_manager_assigned_core_id_t        assigned_core_id;
@@ -455,12 +453,12 @@ module bingo_hw_manager_top #(
     logic                                done_queue_mbox_empty;
     bingo_hw_manager_done_info_full_t    cur_done_queue_info_axi;
     ///////////////////////////////////////
-    // DARTS Tier 1: CERF state and per-core conditional skip signals
+    // CERF state and per-core conditional skip signals
     logic [31:0] cerf_state;
     assign cerf_state_o = cerf_state;  // read-back for SW
     logic [NUM_CORES_PER_CLUSTER-1:0] cond_exec_skip;
 
-    // DARTS CERF: per-core conditional skip evaluation.
+    // CERF: per-core conditional skip evaluation.
     // Only valid when there IS a task being processed (queue not empty).
     // When cond_exec_en==0 (default), this is always 0 regardless of CERF state.
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin: gen_cerf_skip
@@ -472,7 +470,7 @@ module bingo_hw_manager_top #(
                                         cerf_group_active_for_core : !cerf_group_active_for_core);
     end
 
-    // DARTS Tier 2: Task-Slot Scoreboard (slot->core forward, core->slot inverse)
+    // Task-Slot Scoreboard (slot->core forward, core->slot inverse)
     ///////////////////////////////////////
     // Per-cluster write port
     logic                              [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_we;
@@ -575,11 +573,11 @@ module bingo_hw_manager_top #(
     assign cur_task_desc.assigned_core_id = cur_task_desc_full.assigned_core_id;
     assign cur_task_desc.dep_check_info = cur_task_desc_full.dep_check_info;
     assign cur_task_desc.dep_set_info = cur_task_desc_full.dep_set_info;
-    // DARTS Tier 1: CERF fields
+    // CERF fields
     assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
     assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
     assign cur_task_desc.cond_exec_invert = cur_task_desc_full.cond_exec_invert;
-    // DARTS Tier 2: propagate logical slot_id through the pipeline
+    // propagate logical slot_id through the pipeline
     assign cur_task_desc.slot_id = cur_task_desc_full.slot_id;
 
 
@@ -793,7 +791,7 @@ module bingo_hw_manager_top #(
     end
 
     //////////////////////////////////////////////////////////////////////
-    // DARTS Tier 2: Task-Slot Scoreboard (one per cluster)
+    // Task-Slot Scoreboard (one per cluster)
     //
     // Write trigger: any waiting_dep_check_queue_push[*] whose target cluster
     // matches this scoreboard. All per-core pushes in a cycle share the same
@@ -975,7 +973,7 @@ module bingo_hw_manager_top #(
             // Drop the dummy set tasks
             // Drop from ready queue if:
             // 1. Dummy set task (task_type==01, dep_set_en==1) — existing behavior
-            // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
+            // 2. CERF: conditionally skipped task — skip execution but propagate deps
             assign ready_queue_filter_drop[core][cluster] =
                 ((waiting_dep_check_task_desc[core].task_type == 2'b01) &&
                  (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1)) ||
@@ -1071,7 +1069,7 @@ module bingo_hw_manager_top #(
                 .data_o      ( checkout_queue_data_out[core][cluster] ),
                 .pop_i       ( checkout_queue_pop[core][cluster]      )
             );
-            // DARTS CERF: if task is conditionally skipped, mark as dummy (2'b01)
+            // CERF: if task is conditionally skipped, mark as dummy (2'b01)
             // so checkout logic fires dep_set without done_queue match
             always_comb begin
                 checkout_queue_data_in[core][cluster] = waiting_dep_check_task_desc[core];
@@ -1385,23 +1383,7 @@ module bingo_hw_manager_top #(
     );
 
     //////////////////////////////////////////////////////////////////////
-    // DARTS Tier 3: Load Monitor
-    //////////////////////////////////////////////////////////////////////
-    bingo_hw_manager_load_monitor #(
-        .NumCores   (NUM_CORES_PER_CLUSTER),
-        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
-        .CounterWidth(8)
-    ) i_load_monitor (
-        .clk_i              (clk_i),
-        .rst_ni             (rst_ni),
-        .task_dispatched_i  (ready_queue_pop),
-        .task_done_i        (done_q_push),
-        .pending_per_core_o (/* CSR readable — connect when needed */),
-        .total_pending_o    (load_total_pending_o)
-    );
-
-    //////////////////////////////////////////////////////////////////////
-    // DARTS Tier 1: Conditional Execution Register File (CERF)
+    // Conditional Execution Register File (CERF)
     //////////////////////////////////////////////////////////////////////
 
     bingo_hw_manager_cond_exec_controller #(

@@ -221,67 +221,33 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 - [AXI](https://github.com/pulp-platform/axi) v0.39.1 — AXI-Lite definitions, crossbar
 - [common_cells](https://github.com/pulp-platform/common_cells) v1.37.0 — FIFO, stream arbiter/demux/filter, counters
 
-## DARTS: Dynamic Adaptive Runtime Task Scheduling
+## Conditional-DFG Hardware Extensions
 
-DARTS extends the static scheduler with conditional execution, dynamic dispatch, and on-chip reinforcement learning for data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths). See `dev_doc/` for full architecture documentation.
+The base scheduler is extended with two hardware features that let it execute data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths) without going back to the host between branches. Both are pure hardware — no on-chip learning, no host-in-the-loop. See [`dev_doc/hw_scheduler/`](../../Documents/dev_docs/hw_scheduler/) for the full architecture writeup.
 
-### Full-Stack Pipeline
+### CERF — Conditional Execution Register File
 
-```
-User DFG → Compiler → Auto-Scheduler → On-Chip RL Dispatcher → CERF Hardware → Load Monitor
- (cond edges)  (CERF groups)  (HEFT warm-start)   (Q-table 256B)      (<0.1% area)     (feedback)
-                                                         ↑                                   │
-                                                         └──── RL reward update (per batch) ──┘
-```
-
-### Tier 1: Conditional Execution (CERF)
-
-A 32-entry Conditional Execution Register File (CERF) per chiplet enables runtime task skipping:
+A 32-entry CERF per chiplet enables runtime task skipping. A "gating" task (e.g. an MoE router) writes the CERF on completion; downstream tasks tagged with a CERF group are either dispatched or skipped depending on the bit:
 
 ```python
 dfg.bingo_add_edge(router, expert_0, cond=True)   # conditional edge
-dfg.bingo_add_edge(expert_0, aggregator)            # unconditional
+dfg.bingo_add_edge(expert_0, aggregator)           # unconditional
 compile_dfg(dfg)                                    # auto-assigns CERF groups
 run_sim(dfg, config, active_nodes={expert_0})       # user never sees group IDs
 ```
 
-### Tier 2: Task-Slot Scoreboard (GPU-style dependency decoupling)
+Skipped tasks still propagate their `dep_set` so downstream consumers do not deadlock.
 
-The task descriptor carries a `slot_id` (logical, compile-time) separate from `assigned_core_id` (physical, dispatch-time). The dependency matrix is indexed by `slot_id`, enabling the dispatcher to freely remap tasks to any core without breaking dependencies. This is the DFG-accelerator equivalent of GPU warp-ID vs SM-ID decoupling.
+### Task-Slot Scoreboard (GPU-style dependency decoupling)
 
-### Tier 3: On-Chip RL Scheduler
-
-A lightweight Q-learning agent learns optimal task-to-core placement at runtime:
-- **State:** 6 bits (per-core load + CERF state + task type) → 64 states
-- **Action:** target core index → 4 actions
-- **Q-table:** 64 x 4 x int8 = **256 bytes** (fits in on-chip SRAM)
-- **HEFT warm-start:** Q-table initialized from compile-time HEFT schedule (no regression on batch 1)
-- **Reward:** −makespan per batch (Monte Carlo update)
+The task descriptor carries a `slot_id` (logical, compile-time) separate from `assigned_core_id` (physical, dispatch-time). The dependency matrix is indexed by `slot_id`, so the host scheduler can freely remap tasks to any core without breaking dependencies — analogous to GPU warp-ID vs SM-ID decoupling.
 
 ### Additional Modules
 
 | Module | Purpose |
 |--------|---------|
 | `bingo_hw_manager_cond_exec_controller.sv` | 32-entry CERF register file |
-| `bingo_hw_manager_load_monitor.sv` | Per-core pending task counters |
-| `sw/bingo_rl_scheduler.py` | Q-learning agent with HEFT warm-start |
-| `sw/hw_profiles.py` | Calibration injection point for real hardware latencies |
-
-### Evaluation Results
-
-Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`, 9 experiments):
-
-| Workload | Configuration | Speedup |
-|----------|---------------|---------|
-| MoE 8 experts, top-2 | 1 cluster, 3 cores | 2.29x |
-| MoE 16 experts, top-1 | 1 cluster, 3 cores | 4.15x |
-| MoE 8 experts, top-2 | 2 chiplets | 1.84–1.95x |
-| Early exit (stage 0/4) | 1 cluster, 3 cores | 3.20x |
-| Speculative decoding (K=3–7) | 1 cluster, 3 cores | 1.06–1.14x |
-| Mixture of Depths (75% skip) | 1 cluster, 3 cores | 2.58x |
-| Dynamic dispatch (N=8, k=4) | 1 cluster, 4 cores | 1.46x (vs 1.00x static) |
-| RL scheduler (30 batches) | 1 cluster, 4 cores | Up to 3.45x (learned) |
-| Oracle comparison (7 workloads) | 4 cores | 0% gap on conditional DFGs |
+| `bingo_hw_manager_scoreboard.sv` | Logical slot ↔ physical core scoreboard |
 
 ## Source Files
 
@@ -297,7 +263,7 @@ Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`, 9 experi
 | 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM |
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
-| 1 | `bingo_hw_manager_load_monitor.sv` | Load monitoring |
+| 1 | `bingo_hw_manager_scoreboard.sv` | Task-slot scoreboard |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
@@ -305,8 +271,8 @@ Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`, 9 experi
 The test infrastructure includes:
 
 - **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock detection, counter monitoring, and structured trace logging
-- **9 structured DFG patterns:** serial chain, parallel fork-join, double buffer, diamond, stacked GEMM, multi-chiplet chain
-- **44 random DAG tests:** 10-40 tasks, 1-4 chiplets, sparse/dense edge configurations
+- **Structured DFG patterns:** serial chain, parallel fork-join, double buffer, diamond, stacked GEMM, multi-chiplet chain
+- **Random DAG stress tests:** 10–40 tasks, 1–4 chiplets, sparse/dense edge configurations
 - **Cycle-accurate Python model** (`model/`) mirroring the RTL pipeline behavior
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion
 
@@ -318,10 +284,9 @@ cd build && echo "run -all" | vsim -sv_seed 0 tb_bingo_hw_manager_top -t 1ns -vo
 # Run Python model tests
 source ../.venv/bin/activate
 python3 scripts/run_all_tests.py --stress 200
+
+# Run the conditional-DFG evaluation suite (8 experiments)
+python3 scripts/eval_conditional.py
 ```
 
-**Test results:**
-- RTL: 66/66 pass (includes CERF + task-slot scoreboard) with zero deadlocks
-- Python model: 20/20 structured patterns pass with task-slot scoreboard
-- Evaluation: 9 experiment suites, all deadlock-free (CSV results in `eval_results/`)
-- RL learning curve: 30 batches, 0 deadlocks, up to 3.45x learned speedup
+For walkthroughs (per-module RTL guide, end-to-end DFG → simulation tutorial, CERF mini-example, test-suite tour), see [`dev_doc/hw_scheduler/examples/`](../../Documents/dev_docs/hw_scheduler/examples/).

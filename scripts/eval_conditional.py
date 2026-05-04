@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""DARTS Evaluation Suite — generates experimental data for the DATE 2027 paper.
+"""Conditional-DFG evaluation suite for the bingo HW manager.
 
 Experiments:
-  1. MoE single-chiplet: static vs DARTS (N=8, k={1,2,4}), two HW configs
+  1. MoE single-chiplet: static baseline vs conditional skipping (N=8, k={1,2,4})
   2. MoE multi-chiplet: 2 chiplets, balanced vs skewed expert activation
   3. Early exit: 4-stage network, exit at different stages
-  4. N/k sweep: N={4,8,16}, k={1,2,4,8} on a constrained 3-core config
+  4. N/k sweep: N={4,8,16}, k={1,2,4,8}
+  5. Speculative decoding (K={3,5,7})
+  6. Mixture of Depths (12 layers, varying skip rate)
+  7. Auto-scheduling vs round-robin placement
+  8. Dispatch policy comparison (STATIC / ROUND_ROBIN / LOAD_BALANCE)
 
 Output:
   - CSV files per experiment in <output_dir>/
   - Summary tables printed to stdout
 
 Usage:
-  python3 eval_darts.py                    # Full evaluation suite
-  python3 eval_darts.py --moe              # MoE experiments only
-  python3 eval_darts.py --early-exit       # Early exit only
-  python3 eval_darts.py --sweep            # N/k sweep only
-  python3 eval_darts.py --output results/  # Custom output directory
+  python3 eval_conditional.py                    # Full evaluation suite
+  python3 eval_conditional.py --moe              # MoE experiments only
+  python3 eval_conditional.py --early-exit       # Early exit only
+  python3 eval_conditional.py --sweep            # N/k sweep only
+  python3 eval_conditional.py --output results/  # Custom output directory
 """
 
 import argparse
@@ -436,7 +440,7 @@ def run_sim(dfg, config, active_nodes=None, work_delays=None, label=""):
 
 
 def experiment_moe_single_chiplet(output_dir, verbose=True):
-    """Static vs DARTS on a single chiplet with two hardware configs."""
+    """Static vs conditional on a single chiplet with two hardware configs."""
     hw_configs = [
         # (n_clusters, n_cores, label)
         (1, 3, "1cl_3co"),  # Constrained: 3 cores
@@ -476,30 +480,30 @@ def experiment_moe_single_chiplet(output_dir, verbose=True):
             "speedup": "1.00", "deadlock": static.deadlock,
         })
 
-        # ── DARTS for each top-k ──
+        # ── Conditional for each top-k ──
         for k in top_k_values:
             if k >= n_experts:
                 continue
             dfg_k, experts_k, wd_k = make_moe_dfg(n_experts, 1, n_cl, n_co)
             compile_dfg(dfg_k)
             active = set(experts_k[:k])  # Activate first k experts
-            darts = run_sim(dfg_k, sim_config, active, wd_k,
-                            label=f"darts_N{n_experts}_k{k}_{hw_label}")
-            speedup = static.latency / max(darts.latency, 1)
+            cond = run_sim(dfg_k, sim_config, active, wd_k,
+                            label=f"conditional_N{n_experts}_k{k}_{hw_label}")
+            speedup = static.latency / max(cond.latency, 1)
 
             if verbose:
                 print(f"  [{hw_label}] N={n_experts}, k={k}: "
-                      f"latency={darts.latency}, util={darts.avg_utilization:.1%}, "
-                      f"skip={darts.tasks_skipped}, speedup={speedup:.2f}x, "
-                      f"{'DEADLOCK!' if darts.deadlock else 'OK'}")
+                      f"latency={cond.latency}, util={cond.avg_utilization:.1%}, "
+                      f"skip={cond.tasks_skipped}, speedup={speedup:.2f}x, "
+                      f"{'DEADLOCK!' if cond.deadlock else 'OK'}")
 
             rows.append({
                 "hw": hw_label, "n_experts": n_experts, "top_k": k,
-                "mode": "darts", "latency": darts.latency,
-                "tasks_executed": darts.tasks_executed,
-                "tasks_skipped": darts.tasks_skipped,
-                "utilization": f"{darts.avg_utilization:.4f}",
-                "speedup": f"{speedup:.2f}", "deadlock": darts.deadlock,
+                "mode": "conditional", "latency": cond.latency,
+                "tasks_executed": cond.tasks_executed,
+                "tasks_skipped": cond.tasks_skipped,
+                "utilization": f"{cond.avg_utilization:.4f}",
+                "speedup": f"{speedup:.2f}", "deadlock": cond.deadlock,
             })
 
     _save_csv(os.path.join(output_dir, "moe_single_chiplet.csv"), rows)
@@ -512,7 +516,7 @@ def experiment_moe_single_chiplet(output_dir, verbose=True):
 
 
 def experiment_moe_multi_chiplet(output_dir, verbose=True):
-    """Static vs DARTS on 2 chiplets with balanced/skewed activation."""
+    """Static vs conditional on 2 chiplets with balanced/skewed activation."""
     n_experts = 8
     n_chiplets = 2
     n_clusters = 1
@@ -534,10 +538,10 @@ def experiment_moe_multi_chiplet(output_dir, verbose=True):
     # Scenarios: (name, expert_indices_to_activate, description)
     scenarios = [
         ("static", None, "all 8 experts active"),
-        ("darts_balanced", [0, 1], "experts 0(chip0),1(chip1) — cross-chiplet"),
-        ("darts_spread", [0, 3], "experts 0(chip0,co0),3(chip1,co1) — diff cores"),
-        ("darts_skewed", [0, 2], "experts 0(chip0,co0),2(chip0,co1) — same chiplet"),
-        ("darts_worst", [0, 6], "experts 0(chip0,co0),6(chip0,co0) — same core"),
+        ("conditional_balanced", [0, 1], "experts 0(chip0),1(chip1) — cross-chiplet"),
+        ("conditional_spread", [0, 3], "experts 0(chip0,co0),3(chip1,co1) — diff cores"),
+        ("conditional_skewed", [0, 2], "experts 0(chip0,co0),2(chip0,co1) — same chiplet"),
+        ("conditional_worst", [0, 6], "experts 0(chip0,co0),6(chip0,co0) — same core"),
     ]
 
     static_latency = None
@@ -605,7 +609,7 @@ def experiment_early_exit(output_dir, verbose=True):
         "speedup": "1.00", "deadlock": static.deadlock,
     })
 
-    # DARTS: exit at different stages
+    # Conditional: exit at different stages
     for exit_after in range(n_stages):
         dfg_e, pairs_e, wd_e = make_early_exit_dfg(n_stages, n_cores)
         compile_dfg(dfg_e)
@@ -680,19 +684,19 @@ def experiment_nk_sweep(output_dir, verbose=True):
                 compile_dfg(dfg_k)
                 active = set(experts_k[:k])  # Activate first k experts
                 result = run_sim(dfg_k, sim_config, active, wd_k,
-                                 label=f"darts_N{N}_k{k}")
+                                 label=f"conditional_N{N}_k{k}")
                 lat = result.latency
                 skip = result.tasks_skipped
                 speedup = static.latency / max(lat, 1)
 
             if verbose:
                 print(f"  N={N:2d}, k={k:2d} (N/k={N / k:.1f}): "
-                      f"static={static.latency}, darts={lat}, "
+                      f"static={static.latency}, cond={lat}, "
                       f"speedup={speedup:.2f}x, skip={skip}")
 
             rows.append({
                 "N": N, "k": k, "N_over_k": f"{N / k:.1f}",
-                "static_latency": static.latency, "darts_latency": lat,
+                "static_latency": static.latency, "cond_latency": lat,
                 "speedup": f"{speedup:.2f}", "tasks_skipped": skip,
             })
 
@@ -737,7 +741,7 @@ def experiment_spec_decode(output_dir, verbose=True):
             "speedup": "1.00", "deadlock": static.deadlock,
         })
 
-        # DARTS: accept first j tokens (sweep acceptance count)
+        # Conditional: accept first j tokens (sweep acceptance count)
         for j in range(K + 1):  # 0 = reject all, K = accept all
             if j == K:
                 continue  # same as static
@@ -757,7 +761,7 @@ def experiment_spec_decode(output_dir, verbose=True):
 
             rows.append({
                 "K": K, "accepted": j, "accept_rate": f"{rate:.2f}",
-                "mode": "darts", "latency": result.latency,
+                "mode": "conditional", "latency": result.latency,
                 "tasks_skipped": result.tasks_skipped,
                 "speedup": f"{speedup:.2f}", "deadlock": result.deadlock,
             })
@@ -802,7 +806,7 @@ def experiment_mod(output_dir, verbose=True):
         "speedup": "1.00", "deadlock": static.deadlock,
     })
 
-    # DARTS: skip a fraction of layers
+    # Conditional: skip a fraction of layers
     # Patterns: every-other, first-half-skip, random-like
     skip_patterns = [
         ("25%", [b for i, b in enumerate(blocks_s) if i % 4 != 0]),       # skip 25%
@@ -833,7 +837,7 @@ def experiment_mod(output_dir, verbose=True):
 
         rows.append({
             "skip_rate": f"{skip_rate:.2f}", "blocks_active": n_active,
-            "mode": f"darts_{pattern_name}", "latency": result.latency,
+            "mode": f"conditional_{pattern_name}", "latency": result.latency,
             "tasks_skipped": result.tasks_skipped,
             "speedup": f"{speedup:.2f}", "deadlock": result.deadlock,
         })
@@ -869,32 +873,32 @@ def experiment_auto_schedule(output_dir, verbose=True):
             )
             compile_dfg(dfg)
 
-            # DARTS top-2
+            # Conditional top-2
             active = set()
             for experts in meta.expert_nodes.values():
                 active.update(experts[:2])
-            darts = run_sim(dfg, sim_config, active, dfg._work_delays,
-                            label=f"{mode}_{n_layers}L_darts")
+            cond = run_sim(dfg, sim_config, active, dfg._work_delays,
+                            label=f"{mode}_{n_layers}L_conditional")
 
             # Static
             static = run_sim(dfg, sim_config, None, dfg._work_delays,
                              label=f"{mode}_{n_layers}L_static")
 
-            speedup = static.latency / max(darts.latency, 1)
+            speedup = static.latency / max(cond.latency, 1)
 
             if verbose:
-                d = "DEAD" if (static.deadlock or darts.deadlock) else "OK"
+                d = "DEAD" if (static.deadlock or cond.deadlock) else "OK"
                 print(f"  {n_layers:2d}L {mode:12s}  static={static.latency:6d}  "
-                      f"darts={darts.latency:6d}  speedup={speedup:.2f}x  "
-                      f"skip={darts.tasks_skipped:3d}  {d}")
+                      f"cond={cond.latency:6d}  speedup={speedup:.2f}x  "
+                      f"skip={cond.tasks_skipped:3d}  {d}")
 
             rows.append({
                 "layers": n_layers, "placement": mode,
                 "static_latency": static.latency,
-                "darts_latency": darts.latency,
+                "cond_latency": cond.latency,
                 "speedup": f"{speedup:.2f}",
-                "tasks_skipped": darts.tasks_skipped,
-                "deadlock": static.deadlock or darts.deadlock,
+                "tasks_skipped": cond.tasks_skipped,
+                "deadlock": static.deadlock or cond.deadlock,
             })
 
     _save_csv(os.path.join(output_dir, "auto_schedule.csv"), rows)
@@ -964,7 +968,6 @@ def experiment_dispatch_policies(output_dir, verbose=True):
         ("static", DispatchPolicy.STATIC),
         ("round_robin", DispatchPolicy.ROUND_ROBIN),
         ("load_balance", DispatchPolicy.LOAD_BALANCE),
-        ("cond_aware", DispatchPolicy.COND_AWARE),
     ]
 
     for n_experts, n_cl, n_co, hw_label in configs:
@@ -1024,154 +1027,12 @@ def experiment_dispatch_policies(output_dir, verbose=True):
 
 
 # ════════════════════════════════════════════════════════════
-#  Experiment 9 — RL Learning Curve
-# ════════════════════════════════════════════════════════════
-
-
-def experiment_rl_learning(output_dir, verbose=True):
-    """Multi-batch RL learning curve: show the RL agent improves over time.
-
-    Runs N batches of MoE inference with the same RL agent.  Each batch
-    activates a random top-k subset of experts.  The RL agent's Q-table
-    persists across batches, so it learns the workload's routing patterns.
-
-    Also tests distribution shift: after batch 50, change the activation
-    distribution and measure how quickly the RL adapts.
-    """
-    import sys
-    sw_dir = os.path.join(_root, "sw")
-    if sw_dir not in sys.path:
-        sys.path.insert(0, sw_dir)
-    from bingo_rl_scheduler import RLScheduler, RLConfig
-
-    n_experts = 8
-    top_k = 2
-    n_cl, n_co = 1, 4
-    n_batches = 30
-    shift_at = 20  # Distribution shift at this batch
-    rows = []
-
-    rng = __import__("random").Random(42)
-
-    # ── Static baseline (single batch, all experts) ──
-    dfg_s, _, wd_s = make_moe_dfg(n_experts, 1, n_cl, n_co)
-    compile_dfg(dfg_s)
-    static_ref = run_sim(dfg_s, SimConfig(
-        num_chiplets=1, num_clusters_per_chiplet=n_cl,
-        num_cores_per_cluster=n_co,
-        work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY), random_seed=42,
-    ), None, wd_s, label="static_all")
-    static_latency = static_ref.latency
-
-    # ── RL learning loop ──
-    rl = RLScheduler(num_cores=n_co, config=RLConfig(
-        alpha=0.15, epsilon=0.1, warm_start_value=50,
-    ), rng=rng)
-
-    for batch in range(n_batches):
-        # Select random top-k experts
-        if batch < shift_at:
-            # Phase 1: uniform random top-k
-            active_indices = sorted(rng.sample(range(n_experts), top_k))
-        else:
-            # Phase 2 (distribution shift): always activate experts 0,1
-            active_indices = [0, 1]
-
-        # Build + compile DFG
-        dfg, experts, wd = make_moe_dfg(n_experts, 1, n_cl, n_co)
-        compile_dfg(dfg)
-        active = set(experts[i] for i in active_indices)
-
-        # Run with RL dispatch — the RL agent persists across batches
-        config = SimConfig(
-            num_chiplets=1, num_clusters_per_chiplet=n_cl,
-            num_cores_per_cluster=n_co,
-            work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
-            random_seed=42,
-            dispatch_policy=DispatchPolicy.RL_HEFT,
-        )
-        # Manually create simulator and inject the persistent RL agent
-        from model.bingo_sim import BingoSimulator
-        sim = BingoSimulator(config)
-        # Replace the auto-created RL with our persistent one
-        sim.rl_scheduler = rl
-        for chiplet in sim.chiplets.values():
-            chiplet.rl_scheduler = rl
-
-        per_chiplet = dfg_to_task_descriptors(dfg, wd, active)
-        # Warm-start only on first batch
-        if batch == 0:
-            for chip_id, tasks in per_chiplet.items():
-                rl.warm_start_from_placement(tasks)
-
-        sim._task_lists = {c: list(t) for c, t in per_chiplet.items()}
-        for c in sim._task_lists:
-            sim._push_idx[c] = 0
-            sim._push_timer[c] = 0
-            for t in sim._task_lists[c]:
-                if t.task_type in (0, 2):
-                    sim._all_task_ids.add(t.task_id)
-
-        result = sim.run()
-        latency = result.total_latency
-        speedup = static_latency / max(latency, 1)
-        n_skip = sum(1 for e in result.trace.events if e.event_type == "TASK_SKIPPED")
-
-        # Also run static dispatch for comparison
-        dfg2, experts2, wd2 = make_moe_dfg(n_experts, 1, n_cl, n_co)
-        compile_dfg(dfg2)
-        active2 = set(experts2[i] for i in active_indices)
-        static_r = run_sim(dfg2, SimConfig(
-            num_chiplets=1, num_clusters_per_chiplet=n_cl,
-            num_cores_per_cluster=n_co,
-            work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY),
-            random_seed=42,
-        ), active2, wd2, label=f"static_b{batch}")
-
-        phase = "shift" if batch >= shift_at else "normal"
-
-        if verbose:
-            print(f"  Batch {batch:3d} [{phase:6s}] active={active_indices}: "
-                  f"RL={latency:>5} static={static_r.latency:>5} "
-                  f"skip={n_skip} "
-                  f"RL_speedup={speedup:.2f}x "
-                  f"{'DEADLOCK!' if result.deadlock_detected else 'OK'}")
-
-        rows.append({
-            "batch": batch, "phase": phase,
-            "active_experts": str(active_indices),
-            "rl_latency": latency,
-            "static_latency": static_r.latency,
-            "rl_speedup": f"{speedup:.2f}",
-            "static_speedup": f"{static_latency / max(static_r.latency, 1):.2f}",
-            "tasks_skipped": n_skip,
-            "q_nonzero": rl.q_table_stats()["nonzero_entries"],
-            "deadlock": result.deadlock_detected,
-        })
-
-        # Reset simulator state for next batch (but keep RL agent)
-        sim._all_task_ids = set()
-        sim._completed_tasks = set()
-
-    if verbose:
-        stats = rl.q_table_stats()
-        print(f"\n  RL Stats: {stats['batches_trained']} batches, "
-              f"{stats['total_decisions']} decisions, "
-              f"{stats['nonzero_entries']}/{stats['total_entries']} Q-entries used, "
-              f"Q range [{stats['min_q']}, {stats['max_q']}], "
-              f"table size {stats['table_bytes']} bytes")
-
-    _save_csv(os.path.join(output_dir, "rl_learning_curve.csv"), rows)
-    return rows
-
-
-# ════════════════════════════════════════════════════════════
 #  Main
 # ════════════════════════════════════════════════════════════
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DARTS Evaluation Suite")
+    parser = argparse.ArgumentParser(description="Conditional-DFG Evaluation Suite")
     parser.add_argument("--moe", action="store_true", help="MoE experiments only")
     parser.add_argument("--early-exit", action="store_true", help="Early exit only")
     parser.add_argument("--sweep", action="store_true", help="N/k sweep only")
@@ -1179,7 +1040,6 @@ def main():
     parser.add_argument("--mod", action="store_true", help="Mixture of Depths only")
     parser.add_argument("--auto-sched", action="store_true", help="Auto-scheduling comparison only")
     parser.add_argument("--dispatch", action="store_true", help="Dispatch policy comparison only")
-    parser.add_argument("--rl", action="store_true", help="RL learning curve only")
     parser.add_argument("--output", default=None, help="Output directory")
     parser.add_argument("--profile", default="synthetic",
                         choices=["synthetic", "calibrated"],
@@ -1195,12 +1055,12 @@ def main():
 
     run_all = not (args.moe or args.early_exit or args.sweep
                    or args.spec_decode or args.mod or args.auto_sched
-                   or args.dispatch or args.rl)
+                   or args.dispatch)
     verbose = not args.quiet
     output_dir = args.output or os.path.join(_root, "eval_results")
     os.makedirs(output_dir, exist_ok=True)
 
-    print("DARTS Evaluation Suite")
+    print("Conditional-DFG Evaluation Suite")
     print(f"Output: {output_dir}")
     print(f"Profile: {_profile.name}")
     print(f"Delays: expert={EXPERT_DELAY}, router={ROUTER_DELAY}, "
@@ -1209,7 +1069,7 @@ def main():
     # ── Experiment 1: MoE single chiplet ──
     if run_all or args.moe:
         print(f"\n{'─' * 78}")
-        print("  Experiment 1: MoE Single Chiplet  (N=8, static vs DARTS)")
+        print("  Experiment 1: MoE Single Chiplet  (N=8, static vs conditional)")
         print(f"{'─' * 78}")
         rows = experiment_moe_single_chiplet(output_dir, verbose)
         _print_table(
@@ -1250,7 +1110,7 @@ def main():
         rows = experiment_nk_sweep(output_dir, verbose)
         _print_table(
             "N/k Sweep Results", rows,
-            ["N", "k", "N_over_k", "static_latency", "darts_latency",
+            ["N", "k", "N_over_k", "static_latency", "cond_latency",
              "speedup", "tasks_skipped"],
         )
 
@@ -1286,32 +1146,20 @@ def main():
         rows = experiment_auto_schedule(output_dir, verbose)
         _print_table(
             "Auto-Scheduling Results", rows,
-            ["layers", "placement", "static_latency", "darts_latency",
+            ["layers", "placement", "static_latency", "cond_latency",
              "speedup", "tasks_skipped", "deadlock"],
         )
 
     # ── Experiment 8: Dispatch policy comparison ──
     if run_all or args.dispatch:
         print(f"\n{'─' * 78}")
-        print("  Experiment 8: Dispatch Policy Comparison  (STATIC vs LOAD_BALANCE vs COND_AWARE)")
+        print("  Experiment 8: Dispatch Policy Comparison  (STATIC vs ROUND_ROBIN vs LOAD_BALANCE)")
         print(f"{'─' * 78}")
         rows = experiment_dispatch_policies(output_dir, verbose)
         _print_table(
             "Dispatch Policy Results", rows,
             ["n_experts", "top_k", "policy", "latency", "speedup",
              "tasks_skipped", "utilization", "deadlock"],
-        )
-
-    # ── Experiment 9: RL learning curve ──
-    if run_all or args.rl:
-        print(f"\n{'─' * 78}")
-        print("  Experiment 9: RL Learning Curve  (30 batches, shift at batch 20)")
-        print(f"{'─' * 78}")
-        rows = experiment_rl_learning(output_dir, verbose)
-        _print_table(
-            "RL Learning Curve", rows,
-            ["batch", "phase", "active_experts", "rl_latency",
-             "static_latency", "rl_speedup", "tasks_skipped", "deadlock"],
         )
 
     print(f"\n{'=' * 78}")

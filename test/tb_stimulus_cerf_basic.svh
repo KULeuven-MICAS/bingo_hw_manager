@@ -1,5 +1,5 @@
 // =============================================================================
-// DARTS Tier 1 Basic CERF Test
+// Basic CERF Test
 // =============================================================================
 // Simplest CERF test: 3 tasks on a serial chain (core 0 → core 1 → core 2).
 // Task on core 1 is conditional (CERF group 0).

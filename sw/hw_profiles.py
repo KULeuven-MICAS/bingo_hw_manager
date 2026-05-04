@@ -1,4 +1,4 @@
-"""Hardware-calibrated latency profiles for DARTS evaluation.
+"""Hardware-calibrated latency profiles for the conditional-DFG eval suite.
 
 This module centralises every delay parameter used by the evaluation
 pipeline.  Each workload (MoE, early exit, speculative decoding,
@@ -6,7 +6,7 @@ Mixture of Depths) has a dedicated profile dataclass.  Two top-level
 profile sets are provided:
 
   * ``SYNTHETIC`` — the current magic-number defaults (for regression).
-  * ``CALIBRATED`` — **TO BE FILLED IN** from ZigZag / SNAX RTL / Banshee
+  * ``CALIBRATED`` — to be filled in from ZigZag / SNAX RTL / Banshee
     simulation results.  Every field that still needs measurement is
     marked with a ``# TODO(calibrate)`` comment and tagged with the
     simulation recipe required to obtain the number.

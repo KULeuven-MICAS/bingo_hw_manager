@@ -466,7 +466,7 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin
 end
 
 // ---------------------------------------------------------------------------
-// DARTS Tier 1: Per-chiplet CERF control signals (driven by stimulus)
+// Per-chiplet CERF control signals (driven by stimulus)
 // ---------------------------------------------------------------------------
 logic [NUM_CHIPLET-1:0]      cerf_write_en;
 logic [31:0]                 cerf_write_data [NUM_CHIPLET];
@@ -541,12 +541,10 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_core_power_domain_i ( '0                                                          ),
         .pm_axi_lite_req_o                    ( /* unused */                                                ),
         .pm_axi_lite_resp_i                   ( '0                                                          ),
-        // DARTS Tier 1: CERF interface (stimulus files can drive these)
+        // CERF interface (stimulus files can drive these)
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
-        .cerf_state_o                         ( /* read-back, unused in standalone TB */                     ),
-        // DARTS: Load monitor
-        .load_total_pending_o                 ( /* unused */                                                )
+        .cerf_state_o                         ( /* read-back, unused in standalone TB */                     )
     );
 end
 

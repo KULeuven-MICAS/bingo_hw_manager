@@ -26,7 +26,7 @@ class BingoNode(metaclass=ABCMeta):
         self._dep_set_list: list[int] = []
         self._dep_set_chiplet_id: int = 0
         self._dep_set_cluster_id: int = 0
-        # DARTS Tier 1: Conditional Execution
+        # Conditional Execution (CERF)
         self._cond_exec_en: bool = False
         self._cond_exec_group_id: int = 0
         self._cond_exec_invert: bool = False

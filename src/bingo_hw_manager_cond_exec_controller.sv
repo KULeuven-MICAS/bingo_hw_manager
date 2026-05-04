@@ -5,7 +5,7 @@
 // Authors:
 // - Fanchen Kong <fanchen.kong@kuleuven.be>
 
-// DARTS Tier 1: Conditional Execution Register File (CERF)
+// Conditional Execution Register File (CERF)
 //
 // A register file that stores activation status for up to NumGroups
 // "conditional execution groups." Each group corresponds to a logical unit

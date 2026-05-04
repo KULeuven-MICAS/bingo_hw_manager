@@ -295,7 +295,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     cur_node.dep_set_cluster_id = 0
                     cur_node.dep_set_chiplet_id = 0
     # ----------------------------------------------------------------
-    # DARTS Tier 1: Conditional Execution helpers
+    # Conditional Execution (CERF) helpers
     # ----------------------------------------------------------------
     def bingo_annotate_conditional_subgraph(
         self,

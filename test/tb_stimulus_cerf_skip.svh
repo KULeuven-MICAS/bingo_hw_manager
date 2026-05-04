@@ -1,5 +1,5 @@
 // =============================================================================
-// DARTS Tier 1 CERF Skip Test
+// CERF Skip Test
 // =============================================================================
 // Same 3-task chain as cerf_basic, but CERF group 0 is NOT activated.
 // Task 2 (core 1, cond_exec_en=1, group 0) should be SKIPPED.

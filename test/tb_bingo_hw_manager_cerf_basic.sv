@@ -1,4 +1,4 @@
-// DARTS Tier 1: Basic CERF test — conditional task skip
+// Basic CERF test — conditional task skip
 `define TB_STIMULUS_FILE "tb_stimulus_cerf_basic.svh"
 `define TB_NUM_CHIPLET 1
 `define TB_NUM_CLUSTERS_PER_CHIPLET 1

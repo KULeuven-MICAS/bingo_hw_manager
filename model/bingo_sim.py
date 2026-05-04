@@ -17,21 +17,6 @@ from typing import Optional, Literal
 from .bingo_sim_chiplet import ChipletModel, TaskDescriptor, DoneInfo, DispatchPolicy
 from .bingo_sim_trace import EventTrace, SimEvent
 
-# Lazy import to avoid circular dependency when bingo_rl_scheduler
-# imports from model (it doesn't, but keeps the import clean).
-_RLScheduler = None
-
-def _get_rl_scheduler_class():
-    global _RLScheduler
-    if _RLScheduler is None:
-        import sys, os
-        sw_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sw")
-        if sw_dir not in sys.path:
-            sys.path.insert(0, sw_dir)
-        from bingo_rl_scheduler import RLScheduler
-        _RLScheduler = RLScheduler
-    return _RLScheduler
-
 
 @dataclass
 class QueueDepths:
@@ -91,19 +76,7 @@ class BingoSimulator:
                 checkout_queue_depth=config.queue_depths.checkout,
                 done_queue_depth=config.queue_depths.done,
                 done_queue_mode=config.done_queue_mode,
-                dispatch_policy=config.dispatch_policy,
             )
-
-        # RL scheduler (shared across chiplets for now)
-        self.rl_scheduler = None
-        if config.dispatch_policy == DispatchPolicy.RL_HEFT:
-            RLScheduler = _get_rl_scheduler_class()
-            self.rl_scheduler = RLScheduler(
-                num_cores=config.num_cores_per_cluster,
-                rng=self.rng,
-            )
-            for chiplet in self.chiplets.values():
-                chiplet.rl_scheduler = self.rl_scheduler
 
         # Per-chiplet task lists to push
         self._task_lists: dict[int, list[TaskDescriptor]] = {}
@@ -127,18 +100,8 @@ class BingoSimulator:
         for chip_id, tasks in per_chiplet_tasks.items():
             task_list = list(tasks)
 
-            # HEFT warm-start: initialize RL Q-table from static placement
-            # BEFORE batch dispatch (which may change core assignments)
-            if self.rl_scheduler is not None and self.rl_scheduler.batches_trained == 0:
-                self.rl_scheduler.warm_start_from_placement(task_list)
-
-            # Apply batch-level dynamic dispatch if policy != STATIC
-            # For RL_HEFT: the RL agent makes per-task decisions inside
-            # _batch_dispatch via the chiplet's _dispatch() method.
-            # But for the first batch, we use LOAD_BALANCE as the RL
-            # hasn't learned yet (warm-start gives it a baseline).
-            if self.config.dispatch_policy not in (DispatchPolicy.STATIC,
-                                                    DispatchPolicy.RL_HEFT):
+            # Apply batch-level dynamic dispatch if the policy is not STATIC.
+            if self.config.dispatch_policy != DispatchPolicy.STATIC:
                 task_list = self._batch_dispatch(chip_id, task_list)
             self._task_lists[chip_id] = task_list
             self._push_idx[chip_id] = 0
@@ -184,14 +147,6 @@ class BingoSimulator:
                 new_core = min(range(n_cores), key=lambda c: core_load[c])
                 delay = task.work_delay if task.work_delay else 100
                 core_load[new_core] += delay
-            elif policy == DispatchPolicy.COND_AWARE:
-                delay = task.work_delay if task.work_delay else 100
-                if task.cond_exec_en:
-                    effective = delay * 0.25
-                else:
-                    effective = delay
-                new_core = min(range(n_cores), key=lambda c: core_load[c])
-                core_load[new_core] += effective
             else:
                 new_core = task.assigned_core_id
 
@@ -326,10 +281,6 @@ class BingoSimulator:
         self._h2h_inflight = remaining
 
     def _make_result(self, cycle: int, deadlock: bool) -> SimResult:
-        # RL batch update: reward the agent with the observed makespan
-        if self.rl_scheduler is not None and not deadlock:
-            self.rl_scheduler.update_batch(cycle)
-
         info = None
         if deadlock:
             info = DeadlockInfo(

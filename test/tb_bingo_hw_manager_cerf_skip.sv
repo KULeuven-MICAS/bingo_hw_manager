@@ -1,4 +1,4 @@
-// DARTS Tier 1: CERF skip test — conditional task skipped, deps propagated
+// CERF skip test — conditional task skipped, deps propagated
 `define TB_STIMULUS_FILE "tb_stimulus_cerf_skip.svh"
 `define TB_NUM_CHIPLET 1
 `define TB_NUM_CLUSTERS_PER_CHIPLET 1

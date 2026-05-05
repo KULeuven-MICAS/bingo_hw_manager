@@ -103,8 +103,8 @@ module bingo_hw_manager_csr_to_fifo #(
         assign done_info[i].reserved_bits       = '0;
         assign done_info[i].assigned_cluster_id = i / NUM_CORES_PER_CLUSTER % NUM_CLUSTERS_PER_CHIPLET;
         assign done_info[i].assigned_core_id    = i % NUM_CORES_PER_CLUSTER;
-        // Phase 1: slot_id is driven by the scoreboard's core->slot inverse view
-        // at the top level. Under today's identity mapping this evaluates to
+        // slot_id is driven by the scoreboard's core->slot inverse view at the
+        // top level. Under today's identity mapping this evaluates to
         // `i % NUM_CORES_PER_CLUSTER`, so behaviour is unchanged; when a future
         // dispatcher re-binds slots, this field tracks the current binding.
         assign done_info[i].slot_id             = slot_id_i[i];

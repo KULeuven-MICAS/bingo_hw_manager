@@ -588,7 +588,7 @@ module bingo_hw_manager_top #(
     // Inverse-view read port (one per cluster, driven by physical core_id)
     bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_inv_read_core;
     bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_inv_read_slot;
-    // Forward-view read port (unused in Phase 1, reserved for future fault-recovery)
+    // Forward-view read port (currently unused, reserved for future fault-recovery)
     bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_slot;
     bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_core;
     logic                              [NUM_CLUSTERS_PER_CHIPLET-1:0] scoreboard_read_valid;
@@ -1161,8 +1161,8 @@ module bingo_hw_manager_top #(
     // `cur_task_desc` (stream_demux_core_type selects exactly one core), so we
     // can pull write_slot / write_core straight from cur_task_desc.
     //
-    // In Phase 1 `reassign_*` is tied off; Phase 2 (fault recovery) will drive
-    // these ports from a host-visible CSR.
+    // `reassign_*` is currently tied off; a future fault-recovery controller
+    // will drive these ports from a host-visible CSR.
     //////////////////////////////////////////////////////////////////////
     for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_scoreboard
         assign scoreboard_we[cluster] =
@@ -1170,7 +1170,7 @@ module bingo_hw_manager_top #(
             (cur_task_desc.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cluster));
         assign scoreboard_write_slot[cluster] = cur_task_desc.slot_id;
         assign scoreboard_write_core[cluster] = cur_task_desc.assigned_core_id;
-        // Forward-view + scalar inverse read ports are unused in Phase 1 — tie off.
+        // Forward-view + scalar inverse read ports are currently unused — tie off.
         assign scoreboard_read_slot[cluster]     = '0;
         assign scoreboard_inv_read_core[cluster] = '0;
 
@@ -1184,15 +1184,15 @@ module bingo_hw_manager_top #(
             .we_i             (scoreboard_we[cluster]           ),
             .write_slot_i     (scoreboard_write_slot[cluster]   ),
             .write_core_i     (scoreboard_write_core[cluster]   ),
-            // Phase 2 fault-recovery hook — tied off
+            // Fault-recovery hook — tied off
             .reassign_valid_i (1'b0                             ),
             .reassign_slot_i  ('0                               ),
             .reassign_core_i  ('0                               ),
-            // Forward read (unused in Phase 1)
+            // Forward read (currently unused)
             .read_slot_i      (scoreboard_read_slot[cluster]    ),
             .read_core_o      (scoreboard_read_core[cluster]    ),
             .read_valid_o     (scoreboard_read_valid[cluster]   ),
-            // Inverse read (scalar — unused in Phase 1, full table drives done path)
+            // Inverse read (scalar — currently unused, full table drives done path)
             .inv_read_core_i  (scoreboard_inv_read_core[cluster]),
             .inv_read_slot_o  (scoreboard_inv_read_slot[cluster]),
             // Full-table debug + full inverse table for done-path stamping
@@ -1259,7 +1259,7 @@ module bingo_hw_manager_top #(
     // Dep-matrix is indexed by logical slot_id (not physical core_id).
     // For each requesting core c, the matrix row driven is task.slot_id;
     // the check result is sampled back at the same slot row.
-    // Compiler invariant: at most one in-flight task per (cluster, slot) — to be guarded by SVA in Phase 1.
+    // Compiler invariant: at most one in-flight task per (cluster, slot) — to be guarded by SVA.
     always_comb begin : connect_dep_check_for_dep_matrix
         for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
             // Default: no request on any slot row

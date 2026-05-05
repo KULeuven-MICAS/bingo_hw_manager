@@ -14,10 +14,10 @@
 // Write port is driven on task entry into the waiting_dep_check_queue, at
 // which point the descriptor's slot_id and assigned_core_id are both stable.
 //
-// The reassign port is a Phase 2 hook for fault-tolerant slot reclaim:
-// a future fault-recovery controller may retarget slot s to a different
-// physical core without touching any downstream dependency encoding (because
-// the dep_matrix is slot-indexed). Tied off in Phase 1.
+// The reassign port is a hook for fault-tolerant slot reclaim: a future
+// fault-recovery controller may retarget slot s to a different physical core
+// without touching any downstream dependency encoding (because the dep_matrix
+// is slot-indexed). Currently tied off.
 //
 // Reset value: identity (table[i] = i, inv_table[i] = i) so the scoreboard is
 // coherent with the legacy "slot_id == core_id" software behaviour even
@@ -38,8 +38,8 @@ module bingo_hw_manager_scoreboard #(
     input  slot_id_t write_slot_i,
     input  core_id_t write_core_i,
 
-    // Reassign port (Phase 2 fault-recovery hook). Takes priority over we_i if
-    // both fire in the same cycle; leaves a distinct trace for assertions.
+    // Reassign port (fault-recovery hook). Takes priority over we_i if both
+    // fire in the same cycle; leaves a distinct trace for assertions.
     input  logic     reassign_valid_i,
     input  slot_id_t reassign_slot_i,
     input  core_id_t reassign_core_i,

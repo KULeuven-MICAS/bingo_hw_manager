@@ -77,8 +77,8 @@ module bingo_hw_manager_top #(
     output host_axi_lite_req_t                  to_remote_chiplet_axi_lite_req_o,
     input  host_axi_lite_resp_t                 to_remote_chiplet_axi_lite_resp_i,
     /// The chiplet done interface from other chiplets
-    input  host_axi_lite_req_t                  from_remote_axi_lite_req_i,
-    output host_axi_lite_resp_t                 from_remote_axi_lite_resp_o,
+    input  host_axi_lite_req_t                  from_remote_chiplet_axi_lite_req_i,
+    output host_axi_lite_resp_t                 from_remote_chiplet_axi_lite_resp_o,
     /// The done queue interface to the devices
     // Devices -----> Done Queue
     // Here this queue holds all the completed tasks info from the devices
@@ -799,8 +799,8 @@ module bingo_hw_manager_top #(
         .rst_ni      (rst_ni                            ),
         .chip_id_i   (chip_id_i                         ),
         .test_i      (1'b0                              ),
-        .req_i       (from_remote_axi_lite_req_i        ),
-        .resp_o      (from_remote_axi_lite_resp_o       ),
+        .req_i       (from_remote_chiplet_axi_lite_req_i        ),
+        .resp_o      (from_remote_chiplet_axi_lite_resp_o       ),
         .irq_o       (/*not used*/                      ),
         .base_addr_i (chiplet_mailbox_base_addr_i       ),
         .mbox_data_o (chiplet_done_queue_mbox_data      ),

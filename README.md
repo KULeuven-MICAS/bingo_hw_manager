@@ -219,7 +219,7 @@ When a task's `dep_set_chiplet_id != chip_id_i`, the dependency signal is routed
 
 1. Checkout queue entry routed to chiplet dep_set arbiter
 2. `bingo_hw_manager_chiplet_dep_set` module sends AXI-Lite write to remote chiplet's mailbox
-3. Remote chiplet receives via `from_remote_axi_lite_req_i` into its chiplet done queue
+3. Remote chiplet receives via `from_remote_chiplet_axi_lite_req_i` into its chiplet done queue
 4. Remote chiplet processes the signal through its dep matrix set arbiter
 
 Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simultaneously.

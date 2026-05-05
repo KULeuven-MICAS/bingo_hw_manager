@@ -62,16 +62,11 @@ module bingo_hw_manager_rvdb_lookup #(
     // ---- Synthetic bind output (per core in this cluster) ----------------
     // Drives the rvdb-side input of each bind_resolver's 3-way bind mux.
     output logic            [NUM_CORES_PER_CLUSTER-1:0] synthetic_bind_valid_o,
-    output task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0] synthetic_bind_desc_o,
-
-    // ---- Status pulses (sim debug + FPGA counters in P3) -----------------
-    output logic                                  multi_pop_collision_o,   // >1 core pop in same cycle (we serialise)
-    output logic                                  unknown_chain_drop_o,    // pop on a slot whose rvdb_config is invalid (no chain)
-    output logic                                  table_addr_oob_o         // (table_base + return_value) exceeds BIND_TABLE_ENTRIES (saturating)
+    output task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0] synthetic_bind_desc_o
 );
 
     // Find the lowest-indexed core whose done queue popped this cycle (first-match).
-    // Multiple simultaneous pops are flagged by `multi_pop_collision_o` for SVA,
+    // Multiple simultaneous pops are flagged by `multi_pop_collision` for SVA,
     // and we serve only one — the others' RVDB lookups would be dropped if their
     // configs were valid.
     logic                          any_pop;
@@ -143,10 +138,18 @@ module bingo_hw_manager_rvdb_lookup #(
     end
 
 
-    // Status pulses
-    assign multi_pop_collision_o = ($countones(done_pop_i) > 1);
-    assign unknown_chain_drop_o  = any_pop && !cfg_valid_i;
-    assign table_addr_oob_o      = do_inject && addr_overflow;
+    // ---- Internal debug signals (not exposed as ports) -------------------
+    // Kept as named nets so SVA + waveform debug can observe them. With no
+    // external consumers, synthesis will optimise the unused ones away.
+    //   multi_pop_collision : >1 core pop in same cycle (we serialise)
+    //   unknown_chain_drop  : pop on a slot whose rvdb_config is invalid (no chain)
+    //   table_addr_oob      : (table_base + return_value) exceeds BIND_TABLE_ENTRIES (saturating)
+    logic multi_pop_collision;
+    logic unknown_chain_drop;
+    logic table_addr_oob;
+    assign multi_pop_collision = ($countones(done_pop_i) > 1);
+    assign unknown_chain_drop  = any_pop && !cfg_valid_i;
+    assign table_addr_oob      = do_inject && addr_overflow;
 
     // ---- Sim-only invariants ---------------------------------------------
     `ifndef SYNTHESIS
@@ -155,7 +158,7 @@ module bingo_hw_manager_rvdb_lookup #(
     // doesn't happen in practice.
     assert_no_multi_pop_collision: assert property (
         @(posedge clk_i) disable iff (!rst_ni)
-        !multi_pop_collision_o
+        !multi_pop_collision
     ) else $warning("rvdb_lookup: simultaneous done-pop on multiple cores — only one chain serviced");
     `endif
 

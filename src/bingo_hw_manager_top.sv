@@ -397,11 +397,6 @@ module bingo_hw_manager_top #(
     logic                        [NUM_CORES_PER_CLUSTER-1:0]                       rvdb_bind_in_valid;
     bingo_hw_manager_task_desc_t [NUM_CORES_PER_CLUSTER-1:0]                       rvdb_bind_in_desc;
 
-    // RVDB status pulses for FPGA debug counters in P3.
-    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] rvdb_multi_pop_collision;
-    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] rvdb_unknown_chain_drop;
-    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] rvdb_table_addr_oob;
-
     // Bind-table load port — driven externally for now (a future loader will add an
     // AXI-master loader; for sim/TB the harness drives this directly).
     logic                                bind_table_load_en_i_int;
@@ -1128,10 +1123,7 @@ module bingo_hw_manager_top #(
             .bt_read_data_i        (bt_read_data[cl]                       ),
             .bt_loaded_i           (bt_loaded[cl]                          ),
             .synthetic_bind_valid_o(rvdb_synthetic_bind_valid_per_cluster[cl]),
-            .synthetic_bind_desc_o (rvdb_synthetic_bind_desc_per_cluster [cl]),
-            .multi_pop_collision_o (rvdb_multi_pop_collision[cl]            ),
-            .unknown_chain_drop_o  (rvdb_unknown_chain_drop [cl]            ),
-            .table_addr_oob_o      (rvdb_table_addr_oob     [cl]            )
+            .synthetic_bind_desc_o (rvdb_synthetic_bind_desc_per_cluster [cl])
         );
     end
 

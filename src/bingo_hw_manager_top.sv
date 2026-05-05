@@ -390,10 +390,6 @@ module bingo_hw_manager_top #(
     // Bind set pulse to dep_matrix (per core).
     logic                         [NUM_CORES_PER_CLUSTER-1:0] per_core_bind_set_valid;
     bingo_hw_manager_slot_id_t    [NUM_CORES_PER_CLUSTER-1:0] per_core_bind_set_slot;
-    // Status pulses (per core, aggregated upward for FPGA debug counters in P3).
-    logic                         [NUM_CORES_PER_CLUSTER-1:0] bind_resolver_pending_full;
-    logic                         [NUM_CORES_PER_CLUSTER-1:0] bind_resolver_unknown_drop;
-    logic                         [NUM_CORES_PER_CLUSTER-1:0] bind_resolver_double_bind;
     // Per-core classification for the local task-queue path: is the descriptor
     // currently demuxed to this core a BIND? (Used by both the upstream demux
     // ready logic and the cross-chiplet RX demux below.)
@@ -968,10 +964,7 @@ module bingo_hw_manager_top #(
             .live_task_desc_o            ( live_task_desc[core]                        ),
             .live_task_desc_valid_o      ( live_task_desc_valid[core]                  ),
             .bind_set_valid_o            ( per_core_bind_set_valid[core]               ),
-            .bind_set_slot_o             ( per_core_bind_set_slot[core]                ),
-            .pending_buffer_full_o       ( bind_resolver_pending_full[core]            ),
-            .unknown_slot_drop_o         ( bind_resolver_unknown_drop[core]            ),
-            .double_bind_o               ( bind_resolver_double_bind[core]             )
+            .bind_set_slot_o             ( per_core_bind_set_slot[core]                )
         );
         assign bind_in_valid[core] = bind_in_mux_valid;
 

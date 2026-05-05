@@ -30,10 +30,11 @@
 //      eligible cycle, attempt to drain the oldest pending entry.
 //   4. Clear `merged_q` when the FSM advances past the current head
 //      (transition into IDLE → next reserve will have its own merge).
-//   5. Surface status pulses for sim and FPGA debug:
-//      - `pending_buffer_full_o`  (compiler bug if asserted)
-//      - `unknown_slot_drop_o`    (bind has no matching reserve in flight)
-//      - `double_bind_o`          (bind arrives while head already merged)
+//   5. Maintain internal status nets for sim asserts and waveform debug:
+//      - `pending_buffer_full`  (compiler bug if asserted)
+//      - `unknown_slot_drop`    (bind has no matching reserve in flight)
+//      - `double_bind`          (bind arrives while head already merged)
+//      Not exposed as ports; consumed only by SVA inside this module.
 //
 // Critical wiring:
 //   `live_task_desc_o` MUST feed both the dep_check pipeline AND the
@@ -71,12 +72,7 @@ module bingo_hw_manager_bind_resolver #(
 
     // ---- Private bind-set pulse to dep_matrix ----------------------------
     output logic                  bind_set_valid_o,
-    output logic [SLOT_ID_W-1:0]  bind_set_slot_o,
-
-    // ---- Status (sim asserts + FPGA-visible counters via top) -----------
-    output logic            pending_buffer_full_o,
-    output logic            unknown_slot_drop_o,
-    output logic            double_bind_o
+    output logic [SLOT_ID_W-1:0]  bind_set_slot_o
 );
 
     // ----- FSM state encoding -----
@@ -157,15 +153,25 @@ module bingo_hw_manager_bind_resolver #(
     assign bind_in_ready_o = live_bind_is_bind &&
                              (do_merge_from_live || live_bind_park);
 
-    // ----- Status pulses -----
-    assign pending_buffer_full_o = live_bind_is_bind && !live_bind_match &&
-                                   (pending_count_q == PENDING_DEPTH);
-    assign unknown_slot_drop_o   = pending_buffer_full_o; // for now, conflated
+    // ----- Internal status signals (not exposed as ports) -----
+    // Plain boolean nets, available for waveform / ILA debug. Synthesis
+    // optimises away anything not consumed (only `pending_buffer_full` and
+    // `double_bind` feed SVA; `unknown_slot_drop` is currently a conflated
+    // alias of `pending_buffer_full`).
+    //   pending_buffer_full : live bind has nowhere to go (PENDING_DEPTH overflow)
+    //   unknown_slot_drop   : bind has no matching reserve in flight
+    //   double_bind         : bind arrives while head already merged
+    logic pending_buffer_full;
+    logic unknown_slot_drop;
+    logic double_bind;
+    assign pending_buffer_full = live_bind_is_bind && !live_bind_match &&
+                                 (pending_count_q == PENDING_DEPTH);
+    assign unknown_slot_drop   = pending_buffer_full; // for now, conflated
     // double_bind: bind arrives that targets a head whose merged_q is already
     // valid (i.e., a previous bind already populated this slot's executable
     // fields). RTL silently accepts as a no-op; SVA fires in sim.
-    assign double_bind_o = live_bind_is_bind && head_is_reserve && merged_valid_q &&
-                           (live_bind_slot == head_slot_id);
+    assign double_bind = live_bind_is_bind && head_is_reserve && merged_valid_q &&
+                         (live_bind_slot == head_slot_id);
 
     // ----- Live (downstream) descriptor mux -----
     // When merged: project bind fields over reserve's static fields.
@@ -247,14 +253,14 @@ module bingo_hw_manager_bind_resolver #(
     // re-parameterisation.
     assert_pending_buffer_no_overflow: assert property (
         @(posedge clk_i) disable iff (!rst_ni)
-        !pending_buffer_full_o
+        !pending_buffer_full
     ) else $error("bind_resolver: pending buffer overflow — compiler emitted too many out-of-order binds");
 
     // SVA2: a bind that targets a head whose slot already has merged_valid_q
     // is a double-bind (compiler bug). RTL silently no-ops.
     assert_no_double_bind: assert property (
         @(posedge clk_i) disable iff (!rst_ni)
-        !double_bind_o
+        !double_bind
     ) else $error("bind_resolver: double-bind on slot %0d", bind_set_slot_o);
     `endif
 

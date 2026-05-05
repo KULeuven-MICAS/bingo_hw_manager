@@ -15,9 +15,10 @@ module tb_bingo_hw_manager_dep_matrix();
     logic [N-1:0]                      dep_check_result_o;
     logic [N-1:0]                      dep_set_valid_i;
     logic [N-1:0]                      dep_set_ready_o;
-    // arrays of vectors: indexed by row/column, each element is N-bit wide
-    logic [N-1:0]                      dep_check_code_i [N-1:0];
-    logic [N-1:0]                      dep_set_code_i   [N-1:0];
+    // Packed 2D arrays to match the module port type (which is parameter-typed
+    // as `dep_check_code_t [DEP_MATRIX_ROWS-1:0]` = packed [N-1:0][N-1:0]).
+    logic [N-1:0][N-1:0]               dep_check_code_i;
+    logic [N-1:0][N-1:0]               dep_set_code_i;
 
     // helper variables
     logic [INPUT_WIDTH-1:0] col;
@@ -25,6 +26,10 @@ module tb_bingo_hw_manager_dep_matrix();
     logic [N-1:0]           expected_row;
 
     // Instantiate DUT
+    // Note: keeps COLS == ROWS so the JIT-DFG bind path stays inert
+    // (this TB exercises only the original counter-matrix semantics).
+    // T4.1 introduces a parallel TB tb_bingo_hw_manager_dep_matrix_jit.sv
+    // with COLS = ROWS + 1 to exercise WAIT_FOR_BIND.
     bingo_hw_manager_dep_matrix #(
         .DEP_MATRIX_ROWS(N),
         .DEP_MATRIX_COLS(N)
@@ -36,7 +41,9 @@ module tb_bingo_hw_manager_dep_matrix();
         .dep_check_result_o(dep_check_result_o),
         .dep_set_valid_i(dep_set_valid_i),
         .dep_set_ready_o(dep_set_ready_o),
-        .dep_set_code_i(dep_set_code_i)
+        .dep_set_code_i(dep_set_code_i),
+        .bind_set_valid_i(1'b0),
+        .bind_set_slot_i('0)
     );
 
     // Clock generator: 10 ns period

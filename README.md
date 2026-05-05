@@ -66,18 +66,21 @@ Each task is a 64-bit packed struct pushed into the task queue:
 
 | Field | Width | Description |
 |-------|-------|-------------|
-| `task_type` | 1 | 0 = normal (executes on core), 1 = dummy (synchronization only) |
-| `task_id` | 12 | Unique identifier (0-4095) |
+| `task_type` | 2 | `00`=normal, `01`=dummy (sync only), `10`=gating (writes CERF), `11`=JIT-DFG (reserve / bind) |
+| `is_bind` | 1 | When `task_type=2'b11`: `0`=RESERVE, `1`=BIND. Ignored otherwise |
+| `task_id` | 12 | Unique identifier (0–4095) |
 | `assigned_chiplet_id` | 8 | Target chiplet |
 | `assigned_cluster_id` | log2(clusters) | Target cluster within chiplet |
 | `assigned_core_id` | log2(cores) | Target core within cluster |
+| `slot_id` | log2(cores) | Logical slot for dep_matrix indexing (decoupled from `assigned_core_id`) |
 | `dep_check_en` | 1 | Enable dependency checking before dispatch |
-| `dep_check_code` | N_CORES | Bitmask: which core columns to check in dep matrix |
-| `dep_set_en` | 1 | Enable dependency signaling after completion |
+| `dep_check_code` | N_CORES + 1 | Bitmask: which columns to check in dep matrix. The extra column is `WAIT_FOR_BIND_COL` (JIT-DFG) |
+| `dep_set_en` | 1 | Enable dependency signaling after completion. **Repurposed as `rvdb_chain_en` on a JIT RESERVE.** |
 | `dep_set_all_chiplet` | 1 | Broadcast dep_set to all chiplets |
-| `dep_set_chiplet_id` | 8 | Target chiplet for dep_set |
+| `dep_set_chiplet_id` | 8 | Target chiplet for dep_set. **Low 6 bits repurposed as `rvdb_table_base` on an RVDB-armed RESERVE.** |
 | `dep_set_cluster_id` | log2(clusters) | Target cluster for dep_set |
-| `dep_set_code` | N_CORES | Bitmask: which core rows to signal in dep matrix |
+| `dep_set_code` | N_CORES | Bitmask: which rows to signal in dep matrix. **Low log2(N_CORES) bits repurposed as `rvdb_source_slot` on an RVDB-armed RESERVE.** |
+| `cond_exec_en` / `cond_exec_group_id` / `cond_exec_invert` | 1 / 5 / 1 | CERF gating |
 
 ## Task Lifecycle
 
@@ -94,6 +97,12 @@ Each task is a 64-bit packed struct pushed into the task queue:
              - Local: increment counter in target cluster's dep matrix
              - Remote: AXI-Lite write to target chiplet's H2H mailbox
 ```
+
+### Extensions on this lifecycle
+
+- **CERF gating:** at step 3, a task with `cond_exec_en=1` is skipped if its CERF group bit is unset; the skipped task still propagates `dep_set` (step 7).
+- **JIT-DFG:** a `task_type=2'b11, is_bind=0` (RESERVE) descriptor parks at step 3 on a synthetic `WAIT_FOR_BIND_COL` dependency. The host issues a matching BIND descriptor; `bind_resolver` merges the executable fields and pulses the WAIT_FOR_BIND counter, unblocking step 4.
+- **RVDB:** a RESERVE with `rvdb_chain_en=1` arms a `rvdb_config[]` entry at push time. When some prior task completes (step 6) with a return value, `rvdb_lookup` indexes the per-cluster `bind_table` and synthesises a BIND that feeds the same `bind_resolver` as a host-issued JIT bind — completing the chain with **zero host involvement**.
 
 ## Counter-Based Dependency Matrix
 
@@ -223,7 +232,7 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 
 ## Conditional-DFG Hardware Extensions
 
-The base scheduler is extended with two hardware features that let it execute data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths) without going back to the host between branches. Both are pure hardware — no on-chip learning, no host-in-the-loop. See [`dev_doc/hw_scheduler/`](../../Documents/dev_docs/hw_scheduler/) for the full architecture writeup.
+The base scheduler is extended with **four** hardware features that let it execute data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths) without going back to the host between branches. All are pure hardware — no on-chip learning, no host-in-the-loop.
 
 ### CERF — Conditional Execution Register File
 
@@ -242,12 +251,25 @@ Skipped tasks still propagate their `dep_set` so downstream consumers do not dea
 
 The task descriptor carries a `slot_id` (logical, compile-time) separate from `assigned_core_id` (physical, dispatch-time). The dependency matrix is indexed by `slot_id`, so the host scheduler can freely remap tasks to any core without breaking dependencies — analogous to GPU warp-ID vs SM-ID decoupling.
 
-### Additional Modules
+### JIT-DFG — Streaming partial-DFG dispatch (`task_type=2'b11`)
 
-| Module | Purpose |
-|--------|---------|
-| `bingo_hw_manager_cond_exec_controller.sv` | 32-entry CERF register file |
-| `bingo_hw_manager_scoreboard.sv` | Logical slot ↔ physical core scoreboard |
+The host can push a **RESERVE** descriptor (`task_type=2'b11, is_bind=0`) for a slot whose executable fields are not yet known. The slot parks in `dep_check_manager` blocked on a synthetic `WAIT_FOR_BIND_COL` dependency. Later, the host issues a **BIND** descriptor (`task_type=2'b11, is_bind=1`) carrying the kernel + args + dep_set; `bind_resolver` matches by slot_id, merges the bind fields into a shadow flop, and pulses the `WAIT_FOR_BIND` counter — the slot dispatches in the next cycle as if it had been a normal task. Eliminates DFG re-issue cost for streaming workloads.
+
+The mechanism is verified end-to-end across 4 testbenches (basic, bind-before-reserve, double-bind SVA, orphan force-drain). 
+
+### RVDB — Return-Value-Driven Binding
+
+Extends JIT-DFG so the HW reads a completed task's **return value** and uses it to look up the next task's bind from a host-installed **bind table** — **without going through the host runtime**. The kernel return value is forwarded via the device CSR (`{return_value[7:0], task_id[11:0]}` packed into CSR `0x5ff`), captured in `done_info.return_value`, and indexed by `rvdb_lookup` into a per-cluster 64×64-bit `bind_table` SRAM. The synthesised BIND feeds the same `bind_resolver` as a host-issued bind via a 3-way input mux (priority: local > rvdb > remote).
+
+A RESERVE marks itself RVDB-driven by setting **repurposed bits** in `dep_set_info`:
+```
+dep_set_info.dep_set_en              → rvdb_chain_en       (1 bit)
+dep_set_info.dep_set_code[1:0]       → rvdb_source_slot    (which slot's return value drives the chain)
+dep_set_info.dep_set_chiplet_id[5:0] → rvdb_table_base     (offset into the shared bind table)
+```
+No new descriptor flavour, no new task_type. When `rvdb_chain_en=1`, the reserve push side-effects a write to the per-cluster `rvdb_config[]` register. When the source slot completes, `rvdb_lookup` synthesises the bind autonomously.
+
+Verified end-to-end on `tb_bingo_hw_manager_rvdb_basic`. Eliminates the per-iteration host round-trip in autoregressive workloads (decoder loops, MoE routing, KV-eviction).
 
 ## Source Files
 
@@ -257,29 +279,40 @@ The task descriptor carries a `slot_id` (logical, compile-time) separate from `a
 | 0 | `bingo_hw_manager_read_mailbox.sv` | FIFO-to-AXI-Lite read bridge |
 | 0 | `bingo_hw_manager_write_mailbox.sv` | AXI-Lite-to-FIFO write bridge |
 | 0 | `bingo_hw_manager_task_queue_master.sv` | AXI-Lite master for task fetching |
-| 0 | `bingo_hw_manager_csr_to_fifo*.sv` | CSR interface adapters |
-| 1 | `bingo_hw_manager_dep_matrix.sv` | Counter-based dependency matrix |
+| 0 | `bingo_hw_manager_csr_to_fifo*.sv` | CSR interface adapters (RVDB return_value extraction) |
+| 1 | `bingo_hw_manager_dep_matrix.sv` | Counter-based dependency matrix (with WAIT_FOR_BIND col for JIT-DFG) |
 | 1 | `bingo_hw_manager_chiplet_dep_set.sv` | H2H AXI-Lite master |
-| 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM |
+| 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM (exposes `state_o` for bind_resolver observation) |
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_scoreboard.sv` | Task-slot scoreboard |
+| 1 | `bingo_hw_manager_bind_resolver.sv` | **JIT-DFG** per-core bind merge unit |
+| 1 | `bingo_hw_manager_bind_table.sv` | **RVDB** per-cluster 64×64-bit bind-descriptor SRAM |
+| 1 | `bingo_hw_manager_rvdb_lookup.sv` | **RVDB** per-cluster lookup unit |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
 
 The test infrastructure includes:
 
-- **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock detection, counter monitoring, and structured trace logging
+- **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock detection, counter monitoring, structured trace logging, and a per-task `task_return_value_lut` for RVDB stim
 - **Structured DFG patterns:** serial chain, parallel fork-join, double buffer, diamond, stacked GEMM, multi-chiplet chain
 - **Random DAG stress tests:** 10–40 tasks, 1–4 chiplets, sparse/dense edge configurations
+- **CERF testbenches:** `tb_bingo_hw_manager_cerf_basic` (skip + propagate dep_set), `tb_bingo_hw_manager_cerf_skip`
+- **JIT-DFG testbenches:** basic reserve→bind, bind-before-reserve (pending buffer), double-bind SVA, orphan force-drain
+- **RVDB testbenches:** basic chain (`tb_bingo_hw_manager_rvdb_basic`) — chain dispatches autonomously with no host bind round-trip
 - **Cycle-accurate Python model** (`model/`) mirroring the RTL pipeline behavior
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion
 
+Current regression: **8/8 testbenches pass** (top, 2 CERF, 4 JIT-DFG, 1 RVDB).
+
 ```bash
 # Compile and simulate (requires Questa)
+source /users/micas/fkong/no_backup/src_hemaia_eda.sh
 make clean && make compile.log
-cd build && echo "run -all" | vsim -sv_seed 0 tb_bingo_hw_manager_top -t 1ns -voptargs="+acc"
+
+# Run any one TB
+cd build && ../scripts/run_vsim.sh --random-seed bingo_hw_manager_rvdb_basic
 
 # Run Python model tests
 source ../.venv/bin/activate
@@ -288,5 +321,3 @@ python3 scripts/run_all_tests.py --stress 200
 # Run the conditional-DFG evaluation suite (8 experiments)
 python3 scripts/eval_conditional.py
 ```
-
-For walkthroughs (per-module RTL guide, end-to-end DFG → simulation tutorial, CERF mini-example, test-suite tour), see [`dev_doc/hw_scheduler/examples/`](../../Documents/dev_docs/hw_scheduler/examples/).

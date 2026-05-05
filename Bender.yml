@@ -27,6 +27,9 @@ sources:
   - src/bingo_hw_manager_dep_matrix.sv           # Dependency Matrix Module
   - src/bingo_hw_manager_chiplet_dep_set.sv      # Chiplet DependencySetModule (forwards dep_set to remote chiplets)
   - src/bingo_hw_manager_dep_check_manager.sv    # Dependency Check Manager Module
+  - src/bingo_hw_manager_bind_resolver.sv        # JIT-DFG bind resolver (per-core)
+  - src/bingo_hw_manager_bind_table.sv           # RVDB bind table SRAM (per-cluster)
+  - src/bingo_hw_manager_rvdb_lookup.sv          # RVDB lookup unit (per-cluster)
   - src/bingo_hw_manager_pm.sv                   # Power Management Module
   # Level 2
   - src/bingo_hw_manager_top.sv                # Top-level module
@@ -36,6 +39,11 @@ sources:
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
       - test/tb_bingo_hw_manager_cerf_skip.sv
+      - test/tb_bingo_hw_manager_jit_reserve_bind.sv         # JIT-DFG: reserve → bind → dispatch
+      - test/tb_bingo_hw_manager_jit_bind_before_reserve.sv  # JIT-DFG: bind arrives first, pending buffer drain
+      - test/tb_bingo_hw_manager_jit_double_bind.sv          # JIT-DFG: double-bind SVA (negative coverage)
+      - test/tb_bingo_hw_manager_jit_orphan_force_drain.sv   # JIT-DFG: orphan reservation, force-drain bind
+      - test/tb_bingo_hw_manager_rvdb_basic.sv               # RVDB: basic return-value-driven binding chain
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.

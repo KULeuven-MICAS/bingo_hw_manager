@@ -109,6 +109,12 @@ module bingo_hw_manager_csr_to_fifo #(
         // dispatcher re-binds slots, this field tracks the current binding.
         assign done_info[i].slot_id             = slot_id_i[i];
         assign done_info[i].task_id             = done_info_tmp[i][TaskIdWidth-1:0];
+        // RVDB: extract the kernel's 8-bit return value from the upper bits of
+        // the device CSR write. Layout: {return_value[7:0], task_id[11:0]} packed
+        // into the low 20 bits of the 32-bit CSR data. Existing kernels that
+        // call the legacy single-arg helper produce return_value = 0
+        // (backward compatible).
+        assign done_info[i].return_value        = done_info_tmp[i][TaskIdWidth+8-1:TaskIdWidth];
         assign fifo_data_o[i] = data_t'(done_info[i]);
         assign csr_req_valid_write[i] = csr_req_valid_i[i] && csr_req_i[i].write;
 

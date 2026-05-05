@@ -22,16 +22,16 @@ localparam int unsigned EXPECTED_TASK_COUNT     = 1;
 localparam int unsigned DEADLOCK_THRESHOLD      = 5000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 0;
 
-bingo_hw_manager_task_desc_full_t t2 = pack_reserve_task(
-    16'd2, 0, 0, 1, 1,
+bingo_hw_manager_task_desc_host_t t2 = pack_reserve_task(
+    16'd2, 0, 0, 1,
     bingo_hw_manager_dep_code_t'('0)
 );
 
 // Force-drain BIND: kernel sentinel task_id (host kernel table maps this to a
 // no-op), dep_check_en=1 so the WAIT_FOR_BIND counter is decremented along
 // with the check pass, dep_set_en=0 so no downstream slots are touched.
-bingo_hw_manager_task_desc_full_t t_drain = pack_bind_task(
-    16'hDEAD, 0, 0, 1, 1,
+bingo_hw_manager_task_desc_host_t t_drain = pack_bind_task(
+    16'hDEAD, 0, 0, 1,
     /*dep_check_code*/ '0, /*dep_check_en*/ 1'b1,
     /*dep_set_en*/     1'b0, /*dep_set_all*/ 1'b0,
     0, 0, '0

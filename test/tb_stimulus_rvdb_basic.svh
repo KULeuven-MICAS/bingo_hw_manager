@@ -22,7 +22,7 @@ localparam int unsigned DEADLOCK_THRESHOLD      = 5000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 0;
 
 // Source task t1 (core 0, slot 0): kernel returns value 1.
-bingo_hw_manager_task_desc_full_t t1 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t t1 = pack_normal_task(
     2'b00, 16'd1, 0, 0, 0,
     1'b0, '0,
     1'b1, 1'b0, 0, 0, bingo_hw_manager_dep_code_t'(4'b0010)
@@ -31,12 +31,11 @@ bingo_hw_manager_task_desc_full_t t1 = pack_normal_task(
 // RVDB-driven RESERVE for slot 1.
 // pack_reserve_task signature does not yet accept RVDB fields (S3 TODO),
 // so we build the descriptor manually here.
-bingo_hw_manager_task_desc_full_t t2;
+bingo_hw_manager_task_desc_host_t t2;
 initial begin
     t2 = pack_reserve_task(
         16'd2,
         /*chip*/0, /*cluster*/0, /*core*/1,
-        /*slot*/1,
         /*static_check_code*/ bingo_hw_manager_dep_code_t'(4'b0001)
     );
     // Repurposed RVDB chain config in dep_set_info bits (per 02_rtl_spec.md §1.2).
@@ -50,7 +49,7 @@ initial begin
 end
 
 // Consumer t3 (core 2, slot 2): dep_check on slot 1.
-bingo_hw_manager_task_desc_full_t t3 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t t3 = pack_normal_task(
     2'b00, 16'd3, 0, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(4'b0010),
     1'b0, 1'b0, 0, 0, '0

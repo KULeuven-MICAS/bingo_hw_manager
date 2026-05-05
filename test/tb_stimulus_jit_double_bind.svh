@@ -23,27 +23,27 @@ localparam int unsigned EXPECTED_TASK_COUNT     = 2;
 localparam int unsigned DEADLOCK_THRESHOLD      = 5000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 0;
 
-bingo_hw_manager_task_desc_full_t t2 = pack_reserve_task(
-    16'd2, 0, 0, 1, 1,
+bingo_hw_manager_task_desc_host_t t2 = pack_reserve_task(
+    16'd2, 0, 0, 1,
     bingo_hw_manager_dep_code_t'('0)  // no static deps
 );
 
-bingo_hw_manager_task_desc_full_t t_bind1 = pack_bind_task(
-    16'h00B1, 0, 0, 1, 1,
+bingo_hw_manager_task_desc_host_t t_bind1 = pack_bind_task(
+    16'h00B1, 0, 0, 1,
     /*dep_check_code*/ '0,  /*dep_check_en*/ 1'b1,
     /*dep_set_en*/     1'b1, /*dep_set_all*/  1'b0,
     0, 0, bingo_hw_manager_dep_code_t'(4'b0100)
 );
 
-// Second BIND for the same slot — must fire double_bind SVA.
-bingo_hw_manager_task_desc_full_t t_bind2 = pack_bind_task(
-    16'h00B2, 0, 0, 1, 1,
+// Second BIND for the same (cluster, assigned_core_id) — must fire double_bind SVA.
+bingo_hw_manager_task_desc_host_t t_bind2 = pack_bind_task(
+    16'h00B2, 0, 0, 1,
     /*dep_check_code*/ '0,  /*dep_check_en*/ 1'b1,
     /*dep_set_en*/     1'b1, /*dep_set_all*/  1'b0,
     0, 0, bingo_hw_manager_dep_code_t'(4'b0100)
 );
 
-bingo_hw_manager_task_desc_full_t t3 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t t3 = pack_normal_task(
     2'b00, 16'd3, 0, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(4'b0010),
     1'b0, 1'b0, 0, 0, '0

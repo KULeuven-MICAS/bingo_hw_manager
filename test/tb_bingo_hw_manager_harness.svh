@@ -133,6 +133,26 @@ typedef struct packed {
     bingo_hw_manager_slot_id_t                   slot_id;
 } bingo_hw_manager_task_desc_full_t;
 
+// Host-facing task descriptor. Mirrors task_desc_full_t but drops slot_id —
+// HW synthesizes slot_id := assigned_core_id at the AXI decode point. This
+// matches the DUT's bingo_hw_manager_task_desc_host_t.
+localparam int unsigned TaskDescHostWidth          = TaskDescWidth - $bits(bingo_hw_manager_slot_id_t);
+localparam int unsigned ReservedBitsForTaskDescHost = HOST_DW - TaskDescHostWidth;
+typedef struct packed {
+    logic [ReservedBitsForTaskDescHost-1:0]      reserved_bits;
+    bingo_hw_manager_dep_set_info_t              dep_set_info;
+    bingo_hw_manager_dep_check_info_t            dep_check_info;
+    bingo_hw_manager_assigned_core_id_t          assigned_core_id;
+    bingo_hw_manager_assigned_cluster_id_t       assigned_cluster_id;
+    bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
+    bingo_hw_manager_task_id_t                   task_id;
+    bingo_hw_manager_task_type_t                 task_type;
+    logic                                        is_bind;
+    logic                                        cond_exec_en;
+    logic [4:0]                                  cond_exec_group_id;
+    logic                                        cond_exec_invert;
+} bingo_hw_manager_task_desc_host_t;
+
 // RVDB: 8-bit kernel return_value carried back via CSR 0x5ff. Mirror of the
 // module-side typedef.
 typedef logic [7:0] bingo_hw_manager_return_value_t;
@@ -196,7 +216,7 @@ function automatic int flat_id(
            core_id;
 endfunction
 
-function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
+function automatic bingo_hw_manager_task_desc_host_t pack_normal_task(
     input bingo_hw_manager_task_type_t           task_type,
     input bingo_hw_manager_task_id_t             task_id,
     input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
@@ -210,7 +230,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id,
     input bingo_hw_manager_dep_code_t            dep_set_code
 );
-    bingo_hw_manager_task_desc_full_t tmp;
+    bingo_hw_manager_task_desc_host_t tmp;
     tmp.task_type                        = task_type;
     tmp.task_id                          = task_id;
     tmp.assigned_chiplet_id              = assigned_chiplet_id;
@@ -227,12 +247,11 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.is_bind                          = 1'b0; // JIT-DFG: not a bind descriptor
-    tmp.slot_id                          = assigned_core_id; // Identity: slot = core (static dispatch)
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
 
-function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
+function automatic bingo_hw_manager_task_desc_host_t pack_dummy_check_task(
     input bingo_hw_manager_task_type_t           task_type,
     input bingo_hw_manager_task_id_t             task_id,
     input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
@@ -241,7 +260,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     input logic                                  dep_check_en,
     input bingo_hw_manager_dep_code_t            dep_check_code
 );
-    bingo_hw_manager_task_desc_full_t tmp;
+    bingo_hw_manager_task_desc_host_t tmp;
     tmp.task_type                        = task_type;
     tmp.task_id                          = task_id;
     tmp.assigned_chiplet_id              = assigned_chiplet_id;
@@ -254,12 +273,11 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.is_bind                          = 1'b0; // JIT-DFG: not a bind descriptor
-    tmp.slot_id                          = assigned_core_id; // Identity: slot = core
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
 
-function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
+function automatic bingo_hw_manager_task_desc_host_t pack_dummy_set_task(
     input bingo_hw_manager_task_type_t           task_type,
     input bingo_hw_manager_task_id_t             task_id,
     input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
@@ -271,7 +289,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id,
     input bingo_hw_manager_dep_code_t            dep_set_code
 );
-    bingo_hw_manager_task_desc_full_t tmp;
+    bingo_hw_manager_task_desc_host_t tmp;
     tmp.task_type                        = task_type;
     tmp.task_id                          = task_id;
     tmp.assigned_chiplet_id              = assigned_chiplet_id;
@@ -287,7 +305,6 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
     tmp.is_bind                          = 1'b0; // JIT-DFG: not a bind descriptor
-    tmp.slot_id                          = assigned_core_id; // Identity: slot = core
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -299,15 +316,14 @@ endfunction
 // blocked on WAIT_FOR_BIND plus any optional static deps the compiler decides.
 // task_type is forced to 2'b11, is_bind=0. dep_check_en is forced to 1 so the
 // dep_matrix path actually engages (otherwise the WAIT_FOR_BIND filter is bypassed).
-function automatic bingo_hw_manager_task_desc_full_t pack_reserve_task(
+function automatic bingo_hw_manager_task_desc_host_t pack_reserve_task(
     input bingo_hw_manager_task_id_t             task_id,
     input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
     input bingo_hw_manager_assigned_cluster_id_t assigned_cluster_id,
     input bingo_hw_manager_assigned_core_id_t    assigned_core_id,
-    input bingo_hw_manager_slot_id_t             slot_id,
     input bingo_hw_manager_dep_code_t            static_check_code  // optional pre-bind static deps
 );
-    bingo_hw_manager_task_desc_full_t tmp;
+    bingo_hw_manager_task_desc_host_t tmp;
     tmp.task_type                        = 2'b11; // JIT
     tmp.is_bind                          = 1'b0;  // RESERVE
     tmp.task_id                          = task_id;
@@ -321,21 +337,20 @@ function automatic bingo_hw_manager_task_desc_full_t pack_reserve_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
-    tmp.slot_id                          = slot_id;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
 
 // pack_bind_task: a BIND fills in the executable fields for a previously-issued
-// RESERVE matched by (assigned_cluster_id, slot_id). After the bind merges,
-// the slot dispatches like a normal task with the bind's task_id, dep_check
-// and dep_set fields.
-function automatic bingo_hw_manager_task_desc_full_t pack_bind_task(
+// RESERVE matched by (assigned_cluster_id, assigned_core_id) — HW synthesizes
+// slot_id := assigned_core_id at decode for both the RESERVE and BIND, so they
+// match on the internal slot_id key. After the bind merges, the slot dispatches
+// like a normal task with the bind's task_id, dep_check and dep_set fields.
+function automatic bingo_hw_manager_task_desc_host_t pack_bind_task(
     input bingo_hw_manager_task_id_t             task_id,        // post-bind task_id
     input bingo_hw_manager_assigned_chiplet_id_t assigned_chiplet_id,
     input bingo_hw_manager_assigned_cluster_id_t assigned_cluster_id,
     input bingo_hw_manager_assigned_core_id_t    assigned_core_id,
-    input bingo_hw_manager_slot_id_t             slot_id,
     input bingo_hw_manager_dep_code_t            dep_check_code,
     input logic                                  dep_check_en,
     input logic                                  dep_set_en,
@@ -344,7 +359,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_bind_task(
     input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id,
     input bingo_hw_manager_dep_code_t            dep_set_code
 );
-    bingo_hw_manager_task_desc_full_t tmp;
+    bingo_hw_manager_task_desc_host_t tmp;
     tmp.task_type                        = 2'b11; // JIT
     tmp.is_bind                          = 1'b1;  // BIND
     tmp.task_id                          = task_id;
@@ -361,7 +376,6 @@ function automatic bingo_hw_manager_task_desc_full_t pack_bind_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
-    tmp.slot_id                          = slot_id;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction

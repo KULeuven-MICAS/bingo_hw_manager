@@ -17,153 +17,153 @@ localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 500;  // cycles (0 = disabled)
 // ---------------------------------------------------------------------------
 
 // === Chiplet 0 tasks ===
-bingo_hw_manager_task_desc_full_t chip0_cluster0_core0_gemm = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip0_cluster0_core0_gemm = pack_normal_task(
     1'b0, 16'd1, 0, 0, 0,
     1'b0, '0,
     1'b1, 1'b0, 0, 1, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t chip0_cluster1_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip0_cluster1_core1_dma = pack_normal_task(
     1'b0, 16'd2, 0, 1, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 0, 0, bingo_hw_manager_dep_code_t'(8'b00000100)
 );
 
-bingo_hw_manager_task_desc_full_t chip0_cluster0_core2_simd = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip0_cluster0_core2_simd = pack_normal_task(
     1'b0, 16'd3, 0, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010),
     1'b0, 1'b0, 0, 0, '0
 );
 
 // === Chiplet 1 tasks ===
-bingo_hw_manager_task_desc_full_t chip1_cluster0_core2_simd = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip1_cluster0_core2_simd = pack_normal_task(
     1'b0, 16'd4, 1, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000100),
     1'b1, 1'b0, 1, 1, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip1_cluster0_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip1_cluster0_core1_dma = pack_normal_task(
     1'b0, 16'd5, 1, 0, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000100),
     1'b1, 1'b0, 1, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip1_cluster1_core0_gemm = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip1_cluster1_core0_gemm = pack_normal_task(
     1'b0, 16'd6, 1, 1, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000100),
     1'b1, 1'b0, 1, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip1_cluster0_core0_gemm = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip1_cluster0_core0_gemm = pack_normal_task(
     1'b0, 16'd7, 1, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000011),
     1'b0, 1'b0, 0, 0, '0
 );
 
 // === Chiplet 2 tasks ===
-bingo_hw_manager_task_desc_full_t chip2_cluster0_core0_gemm = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip2_cluster0_core0_gemm = pack_normal_task(
     1'b0, 16'd8, 2, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000100),
     1'b1, 1'b0, 2, 1, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t chip2_cluster0_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip2_cluster0_core1_dma = pack_normal_task(
     1'b0, 16'd9, 2, 0, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 2, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip2_cluster1_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip2_cluster1_core1_dma = pack_normal_task(
     1'b0, 16'd10, 2, 1, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 2, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip2_cluster0_core0_gemm_2 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip2_cluster0_core0_gemm_2 = pack_normal_task(
     1'b0, 16'd11, 2, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010),
     1'b0, 1'b0, 0, 0, '0
 );
 
 // === Chiplet 3 tasks ===
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_1 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip3_cluster0_core0_gemm_1 = pack_normal_task(
     1'b0, 16'd12, 3, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000100)
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip3_cluster0_core1_dma = pack_normal_task(
     1'b0, 16'd13, 3, 0, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster1_core1_dma = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip3_cluster1_core1_dma = pack_normal_task(
     1'b0, 16'd14, 3, 1, 1,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core2_simd = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip3_cluster0_core2_simd = pack_normal_task(
     1'b0, 16'd15, 3, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001),
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t chip3_cluster0_core0_gemm_2 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t chip3_cluster0_core0_gemm_2 = pack_normal_task(
     1'b0, 16'd16, 3, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010),
     1'b0, 1'b0, 0, 0, '0
 );
 
 // === Dummy Set Nodes ===
-bingo_hw_manager_task_desc_full_t dummy_set_chip0_to_chip1 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip0_to_chip1 = pack_dummy_set_task(
     1'b1, 16'd17, 0, 0, 2,
     1'b1, 1'b0, 1, 0, bingo_hw_manager_dep_code_t'(8'b00000100)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip0_to_chip2 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip0_to_chip2 = pack_dummy_set_task(
     1'b1, 16'd18, 0, 0, 2,
     1'b1, 1'b0, 2, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip1_local_0 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip1_local_0 = pack_dummy_set_task(
     1'b1, 16'd19, 1, 0, 2,
     1'b1, 1'b0, 1, 0, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip1_to_chip3 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip1_to_chip3 = pack_dummy_set_task(
     1'b1, 16'd20, 1, 0, 0,
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip2_local_0 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip2_local_0 = pack_dummy_set_task(
     1'b1, 16'd21, 2, 0, 0,
     1'b1, 1'b0, 2, 0, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip2_to_chip3 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip2_to_chip3 = pack_dummy_set_task(
     1'b1, 16'd22, 2, 0, 0,
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip3_local_0 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip3_local_0 = pack_dummy_set_task(
     1'b1, 16'd23, 3, 0, 0,
     1'b1, 1'b0, 3, 0, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_set_chip3_local_1 = pack_dummy_set_task(
+bingo_hw_manager_task_desc_host_t dummy_set_chip3_local_1 = pack_dummy_set_task(
     1'b1, 16'd24, 3, 0, 0,
     1'b1, 1'b0, 3, 1, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
 // === Dummy Check Nodes ===
-bingo_hw_manager_task_desc_full_t dummy_check_chip2_0 = pack_dummy_check_task(
+bingo_hw_manager_task_desc_host_t dummy_check_chip2_0 = pack_dummy_check_task(
     1'b1, 16'd25, 2, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
-bingo_hw_manager_task_desc_full_t dummy_check_chip3_0 = pack_dummy_check_task(
+bingo_hw_manager_task_desc_host_t dummy_check_chip3_0 = pack_dummy_check_task(
     1'b1, 16'd26, 3, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000001)
 );
@@ -171,12 +171,12 @@ bingo_hw_manager_task_desc_full_t dummy_check_chip3_0 = pack_dummy_check_task(
 // Split: was single dummy_check with 0b110 (core1+core2 merged).
 // Merging different cores into one check causes deadlock via dep_matrix
 // overlap + done queue HOL blocking. Each checks one core column only.
-bingo_hw_manager_task_desc_full_t dummy_check_chip3_1a = pack_dummy_check_task(
+bingo_hw_manager_task_desc_host_t dummy_check_chip3_1a = pack_dummy_check_task(
     1'b1, 16'd27, 3, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010)  // core 1 only
 );
 
-bingo_hw_manager_task_desc_full_t dummy_check_chip3_1b = pack_dummy_check_task(
+bingo_hw_manager_task_desc_host_t dummy_check_chip3_1b = pack_dummy_check_task(
     1'b1, 16'd28, 3, 0, 0,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000100)  // core 2 only
 );

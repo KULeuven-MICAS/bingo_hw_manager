@@ -214,6 +214,40 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_slot_id_t                   slot_id;
     } bingo_hw_manager_task_desc_full_t;
 
+    // 64bit host-facing task descriptor.
+    //
+    // Mirrors task_desc_full_t but drops `slot_id` — slot_id is HW-internal,
+    // synthesized as assigned_core_id at the AXI decode point (see the
+    // cur_task_desc.slot_id assignment in the host-decode block). The
+    // scoreboard's reassign_valid_i path is the only legitimate way for
+    // slot_id to diverge from assigned_core_id at runtime, and it stays
+    // entirely inside HW. Reserved bits absorb the freed log2(NUM_CORES) bits.
+    localparam int unsigned TaskDescHostWidth        = TaskDescWidth - $bits(bingo_hw_manager_slot_id_t);
+    localparam int unsigned ReservedBitsForTaskDescHost = HostAxiLiteDataWidth - TaskDescHostWidth;
+    if (TaskDescHostWidth>HostAxiLiteDataWidth) begin : gen_task_desc_host_width_check
+        initial begin
+        $error("Host Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescHostWidth, HostAxiLiteDataWidth);
+        $finish;
+        end
+    end
+    typedef struct packed{
+        logic [ReservedBitsForTaskDescHost-1:0]      reserved_bits;
+        bingo_hw_manager_dep_set_info_t              dep_set_info;
+        bingo_hw_manager_dep_check_info_t            dep_check_info;
+        bingo_hw_manager_assigned_core_id_t          assigned_core_id;
+        bingo_hw_manager_assigned_cluster_id_t       assigned_cluster_id;
+        bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
+        bingo_hw_manager_task_id_t                   task_id;
+        bingo_hw_manager_task_type_t                 task_type;
+        // JIT-DFG: RESERVE (0) vs BIND (1); only meaningful when task_type==2'b11.
+        logic                                        is_bind;
+        // Conditional Execution
+        logic                                        cond_exec_en;
+        logic [4:0]                                  cond_exec_group_id;
+        logic                                        cond_exec_invert;
+        // No slot_id — synthesized internally as assigned_core_id at decode.
+    } bingo_hw_manager_task_desc_host_t;
+
     // Done info struct (includes slot_id for scoreboard matching)
     // RVDB: 8-bit kernel return value carried back from device via CSR 0x5ff.
     // Device packs {return_value[7:0], task_id[11:0]} into the 32-bit CSR write.
@@ -275,7 +309,7 @@ module bingo_hw_manager_top #(
     // Task Queue Signals
     /////////////////////////////////////////////////////////
     // The task queue holds the tasks to be scheduled to the devices
-    bingo_hw_manager_task_desc_full_t  cur_task_desc_full;
+    bingo_hw_manager_task_desc_host_t  cur_task_desc_host;
     bingo_hw_manager_task_desc_t       cur_task_desc;
     logic [HostAxiLiteDataWidth-1:0]   task_queue_mbox_data;
     logic                              task_queue_mbox_empty;
@@ -668,23 +702,26 @@ module bingo_hw_manager_top #(
     assign muxed_task_valid = !task_queue_mbox_empty;
     assign task_queue_mbox_pop = stream_demux_core_type_inp_ready && !task_queue_mbox_empty;
 
-    // Compose the current task descriptor from the muxed source
-    assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
-    assign cur_task_desc.task_id = cur_task_desc_full.task_id;
-    assign cur_task_desc.task_type = cur_task_desc_full.task_type;
-    assign cur_task_desc.assigned_chiplet_id = cur_task_desc_full.assigned_chiplet_id;
-    assign cur_task_desc.assigned_cluster_id = cur_task_desc_full.assigned_cluster_id;
-    assign cur_task_desc.assigned_core_id = cur_task_desc_full.assigned_core_id;
-    assign cur_task_desc.dep_check_info = cur_task_desc_full.dep_check_info;
-    assign cur_task_desc.dep_set_info = cur_task_desc_full.dep_set_info;
+    // Compose the current task descriptor from the muxed source.
+    // Host writes task_desc_host_t (no slot_id); HW synthesizes slot_id =
+    // assigned_core_id here. After decode, slot_id and assigned_core_id can
+    // only diverge via the scoreboard's reassign_valid_i path.
+    assign cur_task_desc_host = bingo_hw_manager_task_desc_host_t'(muxed_task_data);
+    assign cur_task_desc.task_id = cur_task_desc_host.task_id;
+    assign cur_task_desc.task_type = cur_task_desc_host.task_type;
+    assign cur_task_desc.assigned_chiplet_id = cur_task_desc_host.assigned_chiplet_id;
+    assign cur_task_desc.assigned_cluster_id = cur_task_desc_host.assigned_cluster_id;
+    assign cur_task_desc.assigned_core_id = cur_task_desc_host.assigned_core_id;
+    assign cur_task_desc.dep_check_info = cur_task_desc_host.dep_check_info;
+    assign cur_task_desc.dep_set_info = cur_task_desc_host.dep_set_info;
     // CERF fields
-    assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
-    assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
-    assign cur_task_desc.cond_exec_invert = cur_task_desc_full.cond_exec_invert;
+    assign cur_task_desc.cond_exec_en = cur_task_desc_host.cond_exec_en;
+    assign cur_task_desc.cond_exec_group_id = cur_task_desc_host.cond_exec_group_id;
+    assign cur_task_desc.cond_exec_invert = cur_task_desc_host.cond_exec_invert;
     // JIT-DFG: propagate is_bind so RESERVE vs BIND survives the demux
-    assign cur_task_desc.is_bind = cur_task_desc_full.is_bind;
-    // propagate logical slot_id through the pipeline
-    assign cur_task_desc.slot_id = cur_task_desc_full.slot_id;
+    assign cur_task_desc.is_bind = cur_task_desc_host.is_bind;
+    // slot_id is HW-internal — synthesize as assigned_core_id at decode.
+    assign cur_task_desc.slot_id = cur_task_desc_host.assigned_core_id;
 
 
     /////////////////////////////////////////////////////////

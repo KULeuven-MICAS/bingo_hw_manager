@@ -72,7 +72,6 @@ Each task is a 64-bit packed struct pushed into the task queue:
 | `assigned_chiplet_id` | 8 | Target chiplet |
 | `assigned_cluster_id` | log2(clusters) | Target cluster within chiplet |
 | `assigned_core_id` | log2(cores) | Target core within cluster |
-| `slot_id` | log2(cores) | Logical slot for dep_matrix indexing (decoupled from `assigned_core_id`) |
 | `dep_check_en` | 1 | Enable dependency checking before dispatch |
 | `dep_check_code` | N_CORES + 1 | Bitmask: which columns to check in dep matrix. The extra column is `WAIT_FOR_BIND_COL` (JIT-DFG) |
 | `dep_set_en` | 1 | Enable dependency signaling after completion. **Repurposed as `rvdb_chain_en` on a JIT RESERVE.** |
@@ -249,11 +248,11 @@ Skipped tasks still propagate their `dep_set` so downstream consumers do not dea
 
 ### Task-Slot Scoreboard (GPU-style dependency decoupling)
 
-The task descriptor carries a `slot_id` (logical, compile-time) separate from `assigned_core_id` (physical, dispatch-time). The dependency matrix is indexed by `slot_id`, so the host scheduler can freely remap tasks to any core without breaking dependencies — analogous to GPU warp-ID vs SM-ID decoupling.
+The host writes only `assigned_core_id`; HW synthesizes a logical `slot_id := assigned_core_id` at the AXI decode point, and the dependency matrix is indexed by the synthesized `slot_id`. A per-cluster scoreboard maintains the slot↔core mapping (identity at reset) so a future fault-recovery controller can rebind a slot to a different core without touching any dependency encoding the host already produced — analogous to GPU warp-ID vs SM-ID decoupling. `slot_id` is a HW-internal concept; no SW programmer ever sets it.
 
 ### JIT-DFG — Streaming partial-DFG dispatch (`task_type=2'b11`)
 
-The host can push a **RESERVE** descriptor (`task_type=2'b11, is_bind=0`) for a slot whose executable fields are not yet known. The slot parks in `dep_check_manager` blocked on a synthetic `WAIT_FOR_BIND_COL` dependency. Later, the host issues a **BIND** descriptor (`task_type=2'b11, is_bind=1`) carrying the kernel + args + dep_set; `bind_resolver` matches by slot_id, merges the bind fields into a shadow flop, and pulses the `WAIT_FOR_BIND` counter — the slot dispatches in the next cycle as if it had been a normal task. Eliminates DFG re-issue cost for streaming workloads.
+The host can push a **RESERVE** descriptor (`task_type=2'b11, is_bind=0`) for a slot whose executable fields are not yet known. The slot parks in `dep_check_manager` blocked on a synthetic `WAIT_FOR_BIND_COL` dependency. Later, the host issues a **BIND** descriptor (`task_type=2'b11, is_bind=1`) carrying the kernel + args + dep_set; `bind_resolver` matches the BIND to its RESERVE by `(cluster, assigned_core_id)` (which HW maps to the internal `slot_id`), merges the bind fields into a shadow flop, and pulses the `WAIT_FOR_BIND` counter — the slot dispatches in the next cycle as if it had been a normal task. Eliminates DFG re-issue cost for streaming workloads.
 
 The mechanism is verified end-to-end across 4 testbenches (basic, bind-before-reserve, double-bind SVA, orphan force-drain). 
 

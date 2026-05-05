@@ -13,14 +13,14 @@ localparam int unsigned DEADLOCK_THRESHOLD     = 5000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 0;
 
 // Task 1: core 0, no deps, sets core 1
-bingo_hw_manager_task_desc_full_t t1 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t t1 = pack_normal_task(
     2'b00, 16'd1, 0, 0, 0,
     1'b0, '0,
     1'b1, 1'b0, 0, 0, bingo_hw_manager_dep_code_t'(8'b00000010)
 );
 
 // Task 2: core 1, checks core 0, sets core 2 — CONDITIONAL (group 0, NOT activated → SKIPPED)
-bingo_hw_manager_task_desc_full_t t2;
+bingo_hw_manager_task_desc_host_t t2;
 initial begin
     t2 = pack_normal_task(
         2'b00, 16'd2, 0, 0, 1,
@@ -33,7 +33,7 @@ initial begin
 end
 
 // Task 3: core 2, checks core 1, no dep_set
-bingo_hw_manager_task_desc_full_t t3 = pack_normal_task(
+bingo_hw_manager_task_desc_host_t t3 = pack_normal_task(
     2'b00, 16'd3, 0, 0, 2,
     1'b1, bingo_hw_manager_dep_code_t'(8'b00000010),
     1'b0, 1'b0, 0, 0, '0

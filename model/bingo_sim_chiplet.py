@@ -38,7 +38,11 @@ class TaskDescriptor:
     cond_exec_en: bool = False
     cond_exec_group_id: int = 0
     cond_exec_invert: bool = False
-    # Logical slot for dependency tracking (decoupled from physical core_id)
+    # HW-internal: synthesized as assigned_core_id at the AXI decode point in
+    # the RTL. The host-facing 64-bit AXI descriptor does not carry slot_id.
+    # Kept here as a sim-only mirror of the HW state so the model can index
+    # the dep_matrix by slot_id like the RTL. Default -1 means "not yet
+    # decoded"; the simulator falls back to assigned_core_id (identity).
     slot_id: int = -1
     # Per-task fixed delay (cycles); None → use config work_delay_range
     work_delay: Optional[int] = None

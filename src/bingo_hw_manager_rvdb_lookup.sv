@@ -138,21 +138,25 @@ module bingo_hw_manager_rvdb_lookup #(
     end
 
 
-    // ---- Internal debug signals (not exposed as ports) -------------------
-    // Kept as named nets so SVA + waveform debug can observe them. With no
-    // external consumers, synthesis will optimise the unused ones away.
-    //   multi_pop_collision : >1 core pop in same cycle (we serialise)
-    //   unknown_chain_drop  : pop on a slot whose rvdb_config is invalid (no chain)
-    //   table_addr_oob      : (table_base + return_value) exceeds BIND_TABLE_ENTRIES (saturating)
-    logic multi_pop_collision;
+    // ---- Internal debug signals -------------------
+    // Plain boolean nets, available for FPGA waveform / ILA debug. Synthesis
+    // will optimise them away if nothing taps them.
+    //   unknown_chain_drop : pop on a slot whose rvdb_config is invalid (no chain)
+    //   table_addr_oob     : (table_base + return_value) exceeds BIND_TABLE_ENTRIES (saturating)
     logic unknown_chain_drop;
     logic table_addr_oob;
-    assign multi_pop_collision = ($countones(done_pop_i) > 1);
-    assign unknown_chain_drop  = any_pop && !cfg_valid_i;
-    assign table_addr_oob      = do_inject && addr_overflow;
+    assign unknown_chain_drop = any_pop && !cfg_valid_i;
+    assign table_addr_oob     = do_inject && addr_overflow;
 
     // ---- Sim-only invariants ---------------------------------------------
+    // multi_pop_collision is sim-only: $countones is sim-friendly and the
+    // signal has no consumer outside the SVA, so we keep both inside the
+    // SYNTHESIS guard to avoid any risk of $countones reaching the synthesis
+    // path.
     `ifndef SYNTHESIS
+    logic multi_pop_collision;
+    assign multi_pop_collision = ($countones(done_pop_i) > 1);
+
     // SVA: multiple cores popping in the same cycle would cause us to drop
     // all but one chain's lookup. Compiler should serialise chains so this
     // doesn't happen in practice.

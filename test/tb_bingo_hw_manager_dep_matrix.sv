@@ -170,22 +170,18 @@ module tb_bingo_hw_manager_dep_matrix();
             check_row(i, expected_row, 1'b1);
         end
 
-        // Test Overlap / Ready Logic
-        $display("Testing Overlap/Ready logic...");
-        // Try to set the same pattern again on the same column.
-        // Matrix already has 1s where pattern has 1s.
-        // Ready should be LOW.
-        @(posedge clk_i);
-        dep_set_code_i[col]  <= pattern;
-        dep_set_valid_i[col] <= 1'b1;
-        #1;
-        if (dep_set_ready_o[col] !== 1'b0) begin
-             $error("READY CHECK FAILED: Expected ready=0 for overlap, got %b", dep_set_ready_o[col]);
+        // Test dep_set_ready contract.
+        // The counter-based dep_matrix has no overlap rejection — a repeated
+        // dep_set on a column with already-set rows simply saturating-increments
+        // the counters. So dep_set_ready_o must always be high (no backpressure).
+        // Sample combinationally without driving valid, so this check can't
+        // perturb the matrix counters mid-test.
+        $display("Testing dep_set_ready contract (always-ready)...");
+        if (dep_set_ready_o[col] !== 1'b1) begin
+             $error("READY CHECK FAILED: Expected ready=1 (always ready), got %b", dep_set_ready_o[col]);
         end else begin
-             $display("READY CHECK OK: Overlap correctly detected.");
+             $display("READY CHECK OK: Always-ready contract holds.");
         end
-        @(posedge clk_i);
-        dep_set_valid_i[col] <= 1'b0;
 
 
         // Test Subset Check Logic

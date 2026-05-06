@@ -137,17 +137,21 @@ module bingo_hw_manager_dep_matrix #(
     // For each (row, col), mark a bit if that column is required by the check
     // code but its counter is currently zero. A row is satisfied iff none of
     // its bits are set (NOR-reduction over the row's mask).
+    //
+    // The result is combinational over (matrix, dep_check_code_i) and is
+    // computed regardless of dep_check_valid_i. Consumption (the saturating
+    // decrement) is still gated on valid — see dep_matrix_clear_row below.
+    // This lets non-destructive observers query the matrix without forcing a
+    // clear, while preserving the "valid && result ⇒ consume" contract for
+    // requesting rows.
     always_comb begin
-        dep_check_result_o   = '0;
         dep_check_unsatisfied = '0;
         for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
             for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
                 dep_check_unsatisfied[r][c] = dep_check_code_i[r][c]
                                             && (counter_q[r][c] == '0);
             end
-            if (dep_check_valid_i[r]) begin
-                dep_check_result_o[r] = ~|dep_check_unsatisfied[r];
-            end
+            dep_check_result_o[r] = ~|dep_check_unsatisfied[r];
         end
     end
 

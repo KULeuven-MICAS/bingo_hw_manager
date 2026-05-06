@@ -52,14 +52,16 @@ module bingo_hw_manager_csr_to_fifo #(
     output csr_rsp_t [N-1:0]    csr_rsp_o,
     output logic     [N-1:0]    csr_rsp_valid_o,
     input  logic     [N-1:0]    csr_rsp_ready_i,
-    // FIFO Read interface
-    input  data_t    [N-1:0]    fifo_data_i,
-    input  logic     [N-1:0]    fifo_data_valid_i,
-    output logic     [N-1:0]    fifo_data_ready_o,
-    // FIFO Write interface
-    output data_t    [N-1:0]    fifo_data_o,
-    output logic     [N-1:0]    fifo_data_valid_o,
-    input  logic     [N-1:0]    fifo_data_ready_i,
+    // FIFO Read interface — ready-queue payload (AXI-width, padded).
+    input  data_t                            [N-1:0]    fifo_data_i,
+    input  logic                             [N-1:0]    fifo_data_valid_i,
+    output logic                             [N-1:0]    fifo_data_ready_o,
+    // FIFO Write interface — done-queue payload (natural-width stamped struct).
+    // The downstream done arbiter / per-(core,cluster) FIFO carry the struct
+    // verbatim, so this output is no longer AXI-shaped.
+    output bingo_hw_manager_done_info_full_t [N-1:0]    fifo_data_o,
+    output logic                             [N-1:0]    fifo_data_valid_o,
+    input  logic                             [N-1:0]    fifo_data_ready_i,
     // Slot ID per channel — driven by the scoreboard's inverse (core -> slot)
     // view at the top level. Used to stamp done_info.slot_id so the dep-matrix
     // done-match can compare logical slot rather than physical core.
@@ -115,7 +117,6 @@ module bingo_hw_manager_csr_to_fifo #(
         // i = core + cluster * NUM_CORES_PER_CLUSTER
         // Hence the cluster id = i / NUM_CORES_PER_CLUSTER % NUM_CLUSTERS_PER_CHIPLET
         // and the core id = i % NUM_CORES_PER_CLUSTER
-        assign done_info[i].reserved_bits       = '0;
         assign done_info[i].assigned_cluster_id = i / NUM_CORES_PER_CLUSTER % NUM_CLUSTERS_PER_CHIPLET;
         assign done_info[i].assigned_core_id    = i % NUM_CORES_PER_CLUSTER;
         // slot_id is driven by the scoreboard's core->slot inverse view at the
@@ -126,7 +127,9 @@ module bingo_hw_manager_csr_to_fifo #(
         // SW-written fields, taken straight from the parsed AXI payload.
         assign done_info[i].task_id             = done_info_axi[i].task_id;
         assign done_info[i].return_value        = done_info_axi[i].return_value;
-        assign fifo_data_o[i] = data_t'(done_info[i]);
+        // Emit the natural-width stamped struct — downstream is typed on the
+        // same struct, no AXI cast needed.
+        assign fifo_data_o[i] = done_info[i];
         assign csr_req_valid_write[i] = csr_req_valid_i[i] && csr_req_i[i].write;
 
         assign csr_req_ready_o[i] = csr_req_i[i].write ? csr_req_ready_write[i] : csr_req_ready_read[i];

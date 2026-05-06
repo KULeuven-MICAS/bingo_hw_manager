@@ -157,26 +157,30 @@ typedef struct packed {
 // module-side typedef.
 typedef logic [7:0] bingo_hw_manager_return_value_t;
 
-typedef struct packed {
-    bingo_hw_manager_return_value_t            return_value;
-    bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
-    bingo_hw_manager_assigned_core_id_t        assigned_core_id;
-    bingo_hw_manager_slot_id_t                 slot_id;
-    bingo_hw_manager_task_id_t                 task_id;
-} bingo_hw_manager_done_info_t;
+// SW-visible AXI-Lite payload from device: only {return_value, task_id} are
+// SW-written. Mirrors the DUT's bingo_hw_manager_done_info_axi_t.
+localparam int unsigned DoneInfoDeviceWidth = $bits(bingo_hw_manager_return_value_t)
+                                            + $bits(bingo_hw_manager_task_id_t);
+localparam int unsigned ReservedBitsForDoneInfoAxi = DEV_DW - DoneInfoDeviceWidth;
 
-localparam int unsigned DoneInfoWidth = $bits(bingo_hw_manager_done_info_t);
-localparam int unsigned ReservedBitsForDoneInfo = DEV_DW - DoneInfoWidth;
-
-if (DoneInfoWidth > DEV_DW) begin : gen_done_info_width_check
+if (DoneInfoDeviceWidth > DEV_DW) begin : gen_done_info_device_width_check
     initial begin
-        $error("Done Info width (%0d) exceeds Device AXI Lite Data Width (%0d)!", DoneInfoWidth, DEV_DW);
+        $error("Device done-info SW payload width (%0d) exceeds Device AXI Lite Data Width (%0d)!", DoneInfoDeviceWidth, DEV_DW);
         $finish;
     end
 end
 
 typedef struct packed {
-    logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
+    logic [ReservedBitsForDoneInfoAxi-1:0]     reserved_bits;
+    bingo_hw_manager_return_value_t            return_value;
+    bingo_hw_manager_task_id_t                 task_id;
+} bingo_hw_manager_done_info_axi_t;
+
+// Full stamped done-info — natural width, no AXI padding. Mirrors the DUT's
+// post-refactor bingo_hw_manager_done_info_full_t. The AXI-Lite mailbox path
+// (TYPE==0) packs this into the low bits of an AXI word at its boundary; see
+// done_payload below.
+typedef struct packed {
     bingo_hw_manager_return_value_t            return_value;
     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
     bingo_hw_manager_assigned_core_id_t        assigned_core_id;
@@ -724,8 +728,83 @@ logic [4095:0] task_completed_bitmap = '0;
 logic [NUM_CHIPLET-1:0] done_queue_lock;
 
 // ---------------------------------------------------------------------------
+// Device-side completion publishers
+// ---------------------------------------------------------------------------
+// A real core's SW contract for done publication is just `{return_value,
+// task_id}`. Routing identity (core_id / cluster_id / slot_id) is added by
+// HW *below* the core:
+//
+//   * CSR mode (TYPE==1): each core has its own CSR channel; csr_to_fifo
+//     stamps routing from the channel index. The publisher just writes the
+//     20-bit `{return_value, task_id}` payload.
+//
+//   * AXI-Lite mailbox mode (TYPE==0): the chiplet has a single mailbox
+//     shared by all cores. In real HW a device-side aggregator/router that
+//     knows the source identity stamps the full struct and forwards it to
+//     the mailbox. The TB models that aggregator here — it sits between
+//     the (transparent) core and the mailbox AXI-Lite slave.
+//
+// Both helpers take only `{return_value, task_id}` plus the (chip, cluster,
+// core) tuple needed for the device-side stamping in mailbox mode. The core
+// itself never composes a `done_info_full_t`.
+
+task automatic publish_done_csr(
+    input chip_id_t                          chip,
+    input int                                cluster,
+    input int                                core,
+    input bingo_hw_manager_task_id_t         task_id,
+    input bingo_hw_manager_return_value_t    return_value
+);
+    // HW's csr_to_fifo expects {return_value[7:0], task_id[11:0]} packed
+    // into the low 20 bits of the 32-bit CSR write. Mirrors the device-side
+    // `write_bingo_hw_manager_done_queue_with_return()` helper.
+    automatic device_axi_lite_data_t csr_payload = '0;
+    csr_payload[TaskIdWidth-1:0]             = task_id;
+    csr_payload[TaskIdWidth+8-1:TaskIdWidth] = return_value;
+    csr_write(chip, cluster, core, '0, csr_payload);
+endtask
+
+task automatic publish_done_mailbox(
+    input chip_id_t                          chip,
+    input int                                cluster,
+    input int                                core,
+    input bingo_hw_manager_task_id_t         task_id,
+    input bingo_hw_manager_return_value_t    return_value
+);
+    // Models the device-side aggregator: stamps routing/slot from the known
+    // (cluster, core) source, packs the natural-width struct into an AXI
+    // word, and writes the shared mailbox. The DUT extracts the same struct
+    // back out at the mailbox boundary and routes by assigned_core_id /
+    // assigned_cluster_id.
+    automatic axi_pkg::resp_t                   resp = '0;
+    automatic bingo_hw_manager_done_info_full_t done_info = '0;
+    automatic device_axi_lite_data_t            done_payload;
+    automatic device_axi_lite_addr_t            done_addr;
+    done_addr[DEV_AW-1:DEV_AW-ChipIdWidth] = chip;
+    done_addr[DEV_AW-ChipIdWidth-1:0]      = DONE_QUEUE_BASE;
+
+    done_info.task_id             = task_id;
+    done_info.return_value        = return_value;
+    done_info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+    done_info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
+    // Phase 0: slot_id == assigned_core_id (identity mapping). Tests with
+    // slot != core will override this field through other paths.
+    done_info.slot_id             = bingo_hw_manager_slot_id_t'(core);
+    done_payload                  = device_axi_lite_data_t'(done_info);
+
+    wait (!done_queue_lock[chip]);
+    done_queue_lock[chip] = 1'b1;
+    done_queue_master[chip].write(done_addr, '0, done_payload, {DEV_DW/8{1'b1}}, resp);
+    repeat ($urandom_range(20, 50)) @(posedge clk_i);
+    done_queue_lock[chip] = 1'b0;
+endtask
+
+// ---------------------------------------------------------------------------
 // Core Worker Task (with structured trace logging)
 // ---------------------------------------------------------------------------
+// Models a device core. SW contract: read a task from the ready queue,
+// simulate work, then publish `{return_value, task_id}`. The publisher
+// helpers above hide the per-mode device-side details.
 task automatic core_worker(
     input chip_id_t chip,
     input int cluster,
@@ -736,15 +815,12 @@ task automatic core_worker(
     automatic device_axi_lite_addr_t           data_addr;
     automatic device_axi_lite_data_t           status = '1;
     automatic device_axi_lite_addr_t           status_addr;
-    automatic device_axi_lite_addr_t           done_addr;
-    automatic bingo_hw_manager_done_info_full_t done_info = '0;
-    automatic device_axi_lite_data_t           done_payload = '0;
+    automatic bingo_hw_manager_task_id_t       task_id;
+    automatic bingo_hw_manager_return_value_t  return_value;
     automatic int idx = flat_id(chip, cluster, core);
 
-    done_addr[DEV_AW-1:DEV_AW-ChipIdWidth]   = chip;
     data_addr[DEV_AW-1:DEV_AW-ChipIdWidth]   = chip;
     status_addr[DEV_AW-1:DEV_AW-ChipIdWidth] = chip;
-    done_addr[DEV_AW-ChipIdWidth-1:0]   = DONE_QUEUE_BASE;
     data_addr[DEV_AW-ChipIdWidth-1:0]   = READY_QUEUE_BASE
         + device_axi_lite_addr_t'((core + cluster * NUM_CORES_PER_CLUSTER) * READY_QUEUE_STRIDE)
         + 32'd4;
@@ -767,49 +843,32 @@ task automatic core_worker(
             csr_read(chip, cluster, core, '0, data);
         end
 
+        task_id      = data[TaskIdWidth-1:0];
+        // RVDB: consult the per-task return-value LUT. Default 0 (backward
+        // compatible). RVDB tests populate this LUT in the stim file.
+        return_value = task_return_value_lut[task_id];
+
         // Task dispatched
         $display("[TRACE] %0t,TASK_DISPATCHED,%0d,%0d,%0d,%0d",
-                 $time, chip, cluster, core, data[TaskIdWidth-1:0]);
+                 $time, chip, cluster, core, task_id);
 
         // Simulate work with random delay
         repeat ($urandom_range(20, 50)) @(posedge clk_i);
 
-        // Compose done info
-        done_info.task_id            = data[TaskIdWidth-1:0];
-        done_info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
-        done_info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
-        // Phase 0: slot_id == assigned_core_id (identity mapping). Tests with slot != core
-        // will override this field explicitly from the task generator.
-        done_info.slot_id             = bingo_hw_manager_slot_id_t'(core);
-        done_info.reserved_bits       = '0;
-        // RVDB: consult the per-task return-value LUT. Default 0 (backward compatible
-        // for existing tests). RVDB tests populate this LUT in the stim file.
-        done_info.return_value        = task_return_value_lut[data[TaskIdWidth-1:0]];
-        done_payload = device_axi_lite_data_t'(done_info);
-
+        // Publish completion. From the core's POV this is just
+        // `{return_value, task_id}`; routing is added below the core.
         if (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 0) begin
-            wait (!done_queue_lock[chip]);
-            done_queue_lock[chip] = 1'b1;
-            done_queue_master[chip].write(done_addr, '0, done_payload, {DEV_DW/8{1'b1}}, resp);
-            repeat ($urandom_range(20, 50)) @(posedge clk_i);
-            done_queue_lock[chip] = 1'b0;
+            publish_done_mailbox(chip, cluster, core, task_id, return_value);
         end else begin
-            // CSR path: HW's csr_to_fifo expects {return_value[7:0], task_id[11:0]}
-            // packed into the low 20 bits of the 32-bit CSR write. Mirrors the
-            // device-side `write_bingo_hw_manager_done_queue_with_return()` helper.
-            automatic device_axi_lite_data_t csr_payload;
-            csr_payload = '0;
-            csr_payload[TaskIdWidth-1:0]            = data[TaskIdWidth-1:0];
-            csr_payload[TaskIdWidth+8-1:TaskIdWidth]= task_return_value_lut[data[TaskIdWidth-1:0]];
-            csr_write(chip, cluster, core, '0, csr_payload);
+            publish_done_csr    (chip, cluster, core, task_id, return_value);
             repeat ($urandom_range(10, 20)) @(posedge clk_i);
         end
 
         // Record completion
         $display("[TRACE] %0t,TASK_DONE,%0d,%0d,%0d,%0d",
-                 $time, chip, cluster, core, data[TaskIdWidth-1:0]);
+                 $time, chip, cluster, core, task_id);
         completed_task_count++;
-        task_completed_bitmap[data[TaskIdWidth-1:0]] = 1'b1;
+        task_completed_bitmap[task_id] = 1'b1;
     end
 endtask
 

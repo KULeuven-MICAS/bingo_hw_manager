@@ -277,19 +277,13 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_id_t                 task_id;
     } bingo_hw_manager_done_info_axi_t;
 
-    // Full stamped struct width — used to size reserved_bits in done_info_full_t
-    // so the per-(core,cluster) done FIFOs (sized to AXI data width) can store
-    // the fully-stamped record after csr_to_fifo adds the HW-known routing/slot
-    // metadata.
-    localparam int unsigned DoneInfoFullWidth = $bits(bingo_hw_manager_return_value_t)
-                                          + $bits(bingo_hw_manager_assigned_cluster_id_t)
-                                          + $bits(bingo_hw_manager_assigned_core_id_t)
-                                          + $bits(bingo_hw_manager_slot_id_t)
-                                          + $bits(bingo_hw_manager_task_id_t);
-    localparam int unsigned ReservedBitsForDoneInfoFull = DeviceAxiLiteDataWidth - DoneInfoFullWidth;
-
+    // Full stamped done-info — the SW-visible payload (return_value + task_id)
+    // augmented with HW-stamped routing/slot metadata. Carried verbatim through
+    // the per-(core,cluster) done FIFOs and through the chiplet-level done
+    // arbiter; no AXI-width padding because nothing on this path is AXI-shaped
+    // anymore. The AXI-Lite mailbox path (TYPE==0) still extracts these fields
+    // out of an AXI word at its boundary, see cur_done_queue_info_axi below.
     typedef struct packed{
-        logic [ReservedBitsForDoneInfoFull-1:0]    reserved_bits;
         bingo_hw_manager_return_value_t            return_value;
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
         bingo_hw_manager_assigned_core_id_t        assigned_core_id;
@@ -1727,12 +1721,15 @@ module bingo_hw_manager_top #(
         logic                  [N_CORES_TOTAL-1:0] read_ready_queue_valid_1d;
         logic                  [N_CORES_TOTAL-1:0] read_ready_queue_ready_1d;
         // 1D Done QUeue FIFO Interface
-        device_axi_lite_data_t [N_CORES_TOTAL-1:0] write_done_queue_data_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_queue_valid_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_queue_ready_1d;
-        device_axi_lite_data_t write_done_queue_data;
-        logic                  write_done_queue_valid;
-        logic                  write_done_queue_ready;
+        // Internal done write path carries the natural-width stamped struct,
+        // not an AXI word — csr_to_fifo emits done_info_full_t directly and the
+        // arbiter / per-(core,cluster) FIFO route it without further casts.
+        bingo_hw_manager_done_info_full_t [N_CORES_TOTAL-1:0] write_done_queue_data_1d;
+        logic                             [N_CORES_TOTAL-1:0] write_done_queue_valid_1d;
+        logic                             [N_CORES_TOTAL-1:0] write_done_queue_ready_1d;
+        bingo_hw_manager_done_info_full_t write_done_queue_data;
+        logic                             write_done_queue_valid;
+        logic                             write_done_queue_ready;
         // 1D slot_id view (from the per-cluster scoreboard inverse table)
         bingo_hw_manager_slot_id_t [N_CORES_TOTAL-1:0] slot_id_1d;
 
@@ -1805,8 +1802,9 @@ module bingo_hw_manager_top #(
 
         // For the Done Queue, we arbitrate all cores' write requests, then demux
         // the result to per-core FIFOs based on assigned_core_id in the data.
+        // Arbiter payload is the stamped struct directly — no AXI-width packing.
         stream_arbiter #(
-            .DATA_T(device_axi_lite_data_t),
+            .DATA_T(bingo_hw_manager_done_info_full_t),
             .N_INP (N_CORES_TOTAL)
         ) i_stream_arbiter_done_queue_write (
             .clk_i      (clk_i),
@@ -1818,22 +1816,19 @@ module bingo_hw_manager_top #(
             .oup_valid_o(write_done_queue_valid),
             .oup_ready_i(write_done_queue_ready)
         );
-        // Extract core_id + cluster_id from the arbitrated done_info to route to per-(core,cluster) FIFO
-        bingo_hw_manager_done_info_full_t write_done_info;
-        assign write_done_info = bingo_hw_manager_done_info_full_t'(write_done_queue_data);
-        // Route to per-(core, cluster) done queue FIFOs
+        // Route the arbitrated stamped struct to per-(core, cluster) done FIFOs.
         always_comb begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    done_q_data_in[c][cl] = write_done_info;
+                    done_q_data_in[c][cl] = write_done_queue_data;
                     done_q_push[c][cl] = write_done_queue_valid &&
-                        (write_done_info.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
-                        (write_done_info.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl)) &&
+                        (write_done_queue_data.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
+                        (write_done_queue_data.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl)) &&
                         !done_q_full[c][cl];
                 end
             end
         end
-        assign write_done_queue_ready = !done_q_full[write_done_info.assigned_core_id][write_done_info.assigned_cluster_id];
+        assign write_done_queue_ready = !done_q_full[write_done_queue_data.assigned_core_id][write_done_queue_data.assigned_cluster_id];
 
 
     end else begin: gen_no_csr_to_fifo_intf

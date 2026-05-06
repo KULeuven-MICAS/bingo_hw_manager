@@ -1282,6 +1282,21 @@ module bingo_hw_manager_top #(
     // For each requesting core c, the matrix row driven is task.slot_id;
     // the check result is sampled back at the same slot row.
     // Compiler invariant: at most one in-flight task per (cluster, slot) — to be guarded by SVA.
+    //
+    // Per-core helpers driven outside the connect block
+    bingo_hw_manager_slot_id_t        [NUM_CORES_PER_CLUSTER-1:0] dep_check_row_idx;
+    bingo_hw_manager_dep_check_code_t [NUM_CORES_PER_CLUSTER-1:0] dep_check_static_code;
+    logic                             [NUM_CORES_PER_CLUSTER-1:0] dep_check_is_jit_slot;
+    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c = c + 1) begin : gen_dep_check_helpers
+        // JIT-slot detection uses the raw FIFO entry: the merged view's task_type
+        // post-bind is the bind's (typically 2'b00) and would mask the JIT origin.
+        assign dep_check_row_idx[c]     = live_task_desc[c].slot_id;
+        assign dep_check_static_code[c] = live_task_desc[c].dep_check_info.dep_check_code;
+        assign dep_check_is_jit_slot[c] = ~waiting_dep_check_queue_empty[c] &&
+                                          (waiting_dep_check_task_desc[c].task_type == TT_JIT) &&
+                                          !waiting_dep_check_task_desc[c].is_bind;
+    end
+
     always_comb begin : connect_dep_check_for_dep_matrix
         for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
             // Default: no request on any slot row
@@ -1296,33 +1311,19 @@ module bingo_hw_manager_top #(
             // Drive row = slot_id for each requesting core, sample ready back from the same row.
             // JIT-DFG: read slot_id and dep_check_code from the bind_resolver's
             // live view so a bound descriptor uses its post-bind dep_check_code.
-            //
-            // Any JIT slot (raw FIFO entry has task_type=2'b11 && is_bind=0,
-            // i.e., a reservation — does not change after the bind merges) gets
-            // the WAIT_FOR_BIND_COL bit OR'd into its check code. This ensures:
+            // Any JIT slot gets the WAIT_FOR_BIND_COL bit OR'd into its check code:
             //   - pre-bind: WAIT_FOR_BIND counter is 0 → check fails → slot parks.
             //   - post-bind: bind_resolver pulsed bind_set, counter is 1 → check
             //     passes AND clears the counter to 0 (saturating decrement).
-            // We base the JIT-slot detection on the raw FIFO entry rather than the
-            // live merged view because the merged view's task_type post-merge is
-            // the bind's (typically 2'b00) and would mask the JIT origin.
             for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                automatic bingo_hw_manager_slot_id_t s;
-                automatic bingo_hw_manager_dep_check_code_t static_check_code;
-                automatic logic                            is_jit_slot;
-                s = live_task_desc[core].slot_id;
-                static_check_code = live_task_desc[core].dep_check_info.dep_check_code;
-                is_jit_slot = ~waiting_dep_check_queue_empty[core] &&
-                              (waiting_dep_check_task_desc[core].task_type == TT_JIT) &&
-                              !waiting_dep_check_task_desc[core].is_bind;
                 if (demux_dep_matrix_oup_valid[core][cluster]) begin
-                    dep_check_valid[cluster][s] = 1'b1;
-                    dep_check_code [cluster][s] = static_check_code |
-                        (is_jit_slot
+                    dep_check_valid[cluster][dep_check_row_idx[core]] = 1'b1;
+                    dep_check_code [cluster][dep_check_row_idx[core]] = dep_check_static_code[core] |
+                        (dep_check_is_jit_slot[core]
                             ? (bingo_hw_manager_dep_check_code_t'(1'b1) << WAIT_FOR_BIND_COL)
                             : '0);
                 end
-                demux_dep_matrix_oup_ready[core][cluster] = dep_check_result[cluster][s];
+                demux_dep_matrix_oup_ready[core][cluster] = dep_check_result[cluster][dep_check_row_idx[core]];
             end
         end
     end

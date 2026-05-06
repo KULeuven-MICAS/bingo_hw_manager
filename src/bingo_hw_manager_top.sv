@@ -248,30 +248,48 @@ module bingo_hw_manager_top #(
         // No slot_id — synthesized internally as assigned_core_id at decode.
     } bingo_hw_manager_task_desc_host_t;
 
-    // Done info struct (includes slot_id for scoreboard matching)
     // RVDB: 8-bit kernel return value carried back from device via CSR 0x5ff.
     // Device packs {return_value[7:0], task_id[11:0]} into the 32-bit CSR write.
     // Kernels that don't return a meaningful value just write 0 (backward compatible).
     typedef logic [7:0]                            bingo_hw_manager_return_value_t;
-    typedef struct packed{
-        bingo_hw_manager_return_value_t            return_value;
-        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
-        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
-        bingo_hw_manager_slot_id_t                 slot_id;
-        bingo_hw_manager_task_id_t                 task_id;
-    } bingo_hw_manager_done_info_t;
 
-    localparam int unsigned DoneInfoWidth = $bits(bingo_hw_manager_done_info_t);
-    localparam int unsigned ReservedBitsForDoneInfo = DeviceAxiLiteDataWidth - DoneInfoWidth;
-    if (DoneInfoWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_width_check
+    // Device → manager AXI-Lite payload: only {return_value, task_id} are SW-visible.
+    // The other fields in done_info_full_t (slot_id, assigned_core_id,
+    // assigned_cluster_id) are HW-stamped in csr_to_fifo based on which physical
+    // CSR channel the write arrived on, and never traverse the device AXI-Lite
+    // bus. This check mirrors the host-side TaskDescHost width check.
+    localparam int unsigned DoneInfoDeviceWidth = $bits(bingo_hw_manager_return_value_t)
+                                                + $bits(bingo_hw_manager_task_id_t);
+    if (DoneInfoDeviceWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_device_width_check
         initial begin
-        $error("Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DeviceAxiLiteDataWidth);
+        $error("Device done-info SW payload {return_value, task_id} width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoDeviceWidth, DeviceAxiLiteDataWidth);
         $finish;
         end
     end
 
+    // SW-visible AXI-Lite payload from device → manager. csr_to_fifo casts the
+    // raw device CSR write to this type and reads the fields by name (instead of
+    // bit-slicing), so the device→manager SW contract is captured in one place.
+    localparam int unsigned ReservedBitsForDoneInfoAxi = DeviceAxiLiteDataWidth - DoneInfoDeviceWidth;
     typedef struct packed{
-        logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
+        logic [ReservedBitsForDoneInfoAxi-1:0]     reserved_bits;
+        bingo_hw_manager_return_value_t            return_value;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_axi_t;
+
+    // Full stamped struct width — used to size reserved_bits in done_info_full_t
+    // so the per-(core,cluster) done FIFOs (sized to AXI data width) can store
+    // the fully-stamped record after csr_to_fifo adds the HW-known routing/slot
+    // metadata.
+    localparam int unsigned DoneInfoFullWidth = $bits(bingo_hw_manager_return_value_t)
+                                          + $bits(bingo_hw_manager_assigned_cluster_id_t)
+                                          + $bits(bingo_hw_manager_assigned_core_id_t)
+                                          + $bits(bingo_hw_manager_slot_id_t)
+                                          + $bits(bingo_hw_manager_task_id_t);
+    localparam int unsigned ReservedBitsForDoneInfoFull = DeviceAxiLiteDataWidth - DoneInfoFullWidth;
+
+    typedef struct packed{
+        logic [ReservedBitsForDoneInfoFull-1:0]    reserved_bits;
         bingo_hw_manager_return_value_t            return_value;
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
         bingo_hw_manager_assigned_core_id_t        assigned_core_id;
@@ -1720,13 +1738,13 @@ module bingo_hw_manager_top #(
 
 
         bingo_hw_manager_csr_to_fifo #(
-            .TaskIdWidth (TaskIdWidth),
             .N (N_CORES_TOTAL),
             .NUM_CORES_PER_CLUSTER (NUM_CORES_PER_CLUSTER),
             .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET),
             .csr_req_t (csr_req_t),
             .csr_rsp_t (csr_rsp_t),
             .data_t    (device_axi_lite_data_t),
+            .bingo_hw_manager_done_info_axi_t  (bingo_hw_manager_done_info_axi_t),
             .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t),
             .bingo_hw_manager_slot_id_t (bingo_hw_manager_slot_id_t)
         ) i_bingo_hw_manager_csr_to_fifo (

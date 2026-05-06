@@ -12,7 +12,6 @@
 // so we only need demux for read and write for each input
 module bingo_hw_manager_csr_to_fifo #(
     // Suppose there are N CSR req/rsp channels and N FIFOs
-    parameter int unsigned TaskIdWidth = 12,
     parameter int unsigned N = 6,
     parameter int unsigned NUM_CORES_PER_CLUSTER = 3,
     parameter int unsigned NUM_CLUSTERS_PER_CHIPLET = 2,
@@ -28,6 +27,13 @@ module bingo_hw_manager_csr_to_fifo #(
 //     data_t   data;
 //   } csr_rsp_t;
     parameter type data_t = logic,
+    // SW-visible AXI-Lite payload from device:
+    //   typedef struct packed {
+    //     logic [ReservedBitsForDoneInfoAxi-1:0] reserved_bits;
+    //     bingo_hw_manager_return_value_t       return_value;
+    //     bingo_hw_manager_task_id_t            task_id;
+    //   } bingo_hw_manager_done_info_axi_t;
+    parameter type bingo_hw_manager_done_info_axi_t  = logic,
     parameter type bingo_hw_manager_done_info_full_t = logic,
     parameter type bingo_hw_manager_slot_id_t = logic
     // typedef struct packed{
@@ -70,7 +76,10 @@ module bingo_hw_manager_csr_to_fifo #(
 
     // Signals for Write Done Info
     bingo_hw_manager_done_info_full_t [N-1:0] done_info;
-    data_t [N-1:0] done_info_tmp;
+    // Raw AXI-Lite write from the device, parsed into the SW-visible payload
+    // type. Field access by name replaces the prior manual bit-slicing.
+    data_t                            [N-1:0] done_info_axi_raw;
+    bingo_hw_manager_done_info_axi_t  [N-1:0] done_info_axi;
     for (genvar i = 0; i < N; i++) begin
         bingo_hw_manager_csr_to_fifo_read #(
             .data_t(data_t)
@@ -92,10 +101,16 @@ module bingo_hw_manager_csr_to_fifo #(
             .csr_req_data_i(csr_req_i[i].data),
             .csr_req_valid_i(csr_req_valid_write[i]),
             .csr_req_ready_o(csr_req_ready_write[i]),
-            .fifo_data_o(done_info_tmp[i]),
+            .fifo_data_o(done_info_axi_raw[i]),
             .fifo_data_valid_o(fifo_data_valid_o[i]),
             .fifo_data_ready_i(fifo_data_ready_i[i])
         );
+        // Parse the raw AXI write into the SW-visible payload struct.
+        // Layout: {reserved_bits, return_value[7:0], task_id[11:0]} packed into
+        // the device AXI-Lite data lane. Kernels that call the legacy
+        // single-arg helper produce return_value = 0 (backward compatible).
+        assign done_info_axi[i] = bingo_hw_manager_done_info_axi_t'(done_info_axi_raw[i]);
+
         // Compose the done info
         // i = core + cluster * NUM_CORES_PER_CLUSTER
         // Hence the cluster id = i / NUM_CORES_PER_CLUSTER % NUM_CLUSTERS_PER_CHIPLET
@@ -108,13 +123,9 @@ module bingo_hw_manager_csr_to_fifo #(
         // `i % NUM_CORES_PER_CLUSTER`, so behaviour is unchanged; when a future
         // dispatcher re-binds slots, this field tracks the current binding.
         assign done_info[i].slot_id             = slot_id_i[i];
-        assign done_info[i].task_id             = done_info_tmp[i][TaskIdWidth-1:0];
-        // RVDB: extract the kernel's 8-bit return value from the upper bits of
-        // the device CSR write. Layout: {return_value[7:0], task_id[11:0]} packed
-        // into the low 20 bits of the 32-bit CSR data. Existing kernels that
-        // call the legacy single-arg helper produce return_value = 0
-        // (backward compatible).
-        assign done_info[i].return_value        = done_info_tmp[i][TaskIdWidth+8-1:TaskIdWidth];
+        // SW-written fields, taken straight from the parsed AXI payload.
+        assign done_info[i].task_id             = done_info_axi[i].task_id;
+        assign done_info[i].return_value        = done_info_axi[i].return_value;
         assign fifo_data_o[i] = data_t'(done_info[i]);
         assign csr_req_valid_write[i] = csr_req_valid_i[i] && csr_req_i[i].write;
 

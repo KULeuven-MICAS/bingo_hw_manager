@@ -157,36 +157,50 @@ typedef struct packed {
 // module-side typedef.
 typedef logic [7:0] bingo_hw_manager_return_value_t;
 
-// SW-visible AXI-Lite payload from device: only {return_value, task_id} are
-// SW-written. Mirrors the DUT's bingo_hw_manager_done_info_axi_t.
-localparam int unsigned DoneInfoDeviceWidth = $bits(bingo_hw_manager_return_value_t)
+// SW-visible CSR write payload (TYPE==1 mode): only {return_value, task_id}
+// are SW-written. Mirrors the DUT's bingo_hw_manager_done_info_csr_t.
+localparam int unsigned DoneInfoCsrWidth = $bits(bingo_hw_manager_return_value_t)
                                             + $bits(bingo_hw_manager_task_id_t);
-localparam int unsigned ReservedBitsForDoneInfoAxi = DEV_DW - DoneInfoDeviceWidth;
+localparam int unsigned ReservedBitsForDoneInfoCsr = DEV_DW - DoneInfoCsrWidth;
 
-if (DoneInfoDeviceWidth > DEV_DW) begin : gen_done_info_device_width_check
+if (DoneInfoCsrWidth > DEV_DW) begin : gen_done_info_csr_width_check
     initial begin
-        $error("Device done-info SW payload width (%0d) exceeds Device AXI Lite Data Width (%0d)!", DoneInfoDeviceWidth, DEV_DW);
+        $error("Device done-info SW payload width (%0d) exceeds Device AXI Lite Data Width (%0d)!", DoneInfoCsrWidth, DEV_DW);
         $finish;
     end
 end
 
 typedef struct packed {
-    logic [ReservedBitsForDoneInfoAxi-1:0]     reserved_bits;
+    logic [ReservedBitsForDoneInfoCsr-1:0]     reserved_bits;
     bingo_hw_manager_return_value_t            return_value;
     bingo_hw_manager_task_id_t                 task_id;
-} bingo_hw_manager_done_info_axi_t;
+} bingo_hw_manager_done_info_csr_t;
 
-// Full stamped done-info — natural width, no AXI padding. Mirrors the DUT's
-// post-refactor bingo_hw_manager_done_info_full_t. The AXI-Lite mailbox path
-// (TYPE==0) packs this into the low bits of an AXI word at its boundary; see
-// done_payload below.
+// Mailbox-visible AXI-Lite payload (TYPE==0 mode). The shared mailbox can't
+// disambiguate writers, so the writer must include the routing identity
+// {assigned_core_id, assigned_cluster_id}. slot_id is HW-internal (the
+// manager stamps it from the scoreboard inverse table at dequeue), so the
+// writer must NOT carry it. Mirrors the DUT's bingo_hw_manager_done_info_mbox_t.
+localparam int unsigned DoneInfoMboxWidth = $bits(bingo_hw_manager_return_value_t)
+                                          + $bits(bingo_hw_manager_assigned_cluster_id_t)
+                                          + $bits(bingo_hw_manager_assigned_core_id_t)
+                                          + $bits(bingo_hw_manager_task_id_t);
+localparam int unsigned ReservedBitsForDoneInfoMbox = DEV_DW - DoneInfoMboxWidth;
+
+if (DoneInfoMboxWidth > DEV_DW) begin : gen_done_info_mbox_width_check
+    initial begin
+        $error("Done-info mailbox payload width (%0d) exceeds Device AXI Lite Data Width (%0d)!", DoneInfoMboxWidth, DEV_DW);
+        $finish;
+    end
+end
+
 typedef struct packed {
+    logic [ReservedBitsForDoneInfoMbox-1:0]    reserved_bits;
     bingo_hw_manager_return_value_t            return_value;
     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
     bingo_hw_manager_assigned_core_id_t        assigned_core_id;
-    bingo_hw_manager_slot_id_t                 slot_id;
     bingo_hw_manager_task_id_t                 task_id;
-} bingo_hw_manager_done_info_full_t;
+} bingo_hw_manager_done_info_mbox_t;
 
 // RVDB: per-task return value, populated by the stim when a kernel "returns"
 // a non-zero payload. Indexed by task_id; default 0 (backward compatible —
@@ -739,14 +753,15 @@ logic [NUM_CHIPLET-1:0] done_queue_lock;
 //     20-bit `{return_value, task_id}` payload.
 //
 //   * AXI-Lite mailbox mode (TYPE==0): the chiplet has a single mailbox
-//     shared by all cores. In real HW a device-side aggregator/router that
-//     knows the source identity stamps the full struct and forwards it to
-//     the mailbox. The TB models that aggregator here — it sits between
-//     the (transparent) core and the mailbox AXI-Lite slave.
+//     shared by all cores. The shared mailbox can't disambiguate writers,
+//     so a device-side aggregator that knows the source identity stamps
+//     {assigned_core_id, assigned_cluster_id} alongside the SW payload and
+//     writes the mailbox. slot_id is HW-internal — the manager looks it up
+//     from the scoreboard inverse table at the mbox boundary, so neither
+//     SW nor the aggregator carries it. The TB models that aggregator here.
 //
 // Both helpers take only `{return_value, task_id}` plus the (chip, cluster,
-// core) tuple needed for the device-side stamping in mailbox mode. The core
-// itself never composes a `done_info_full_t`.
+// core) tuple needed for the aggregator's routing stamp in mailbox mode.
 
 task automatic publish_done_csr(
     input chip_id_t                          chip,
@@ -771,26 +786,23 @@ task automatic publish_done_mailbox(
     input bingo_hw_manager_task_id_t         task_id,
     input bingo_hw_manager_return_value_t    return_value
 );
-    // Models the device-side aggregator: stamps routing/slot from the known
-    // (cluster, core) source, packs the natural-width struct into an AXI
-    // word, and writes the shared mailbox. The DUT extracts the same struct
-    // back out at the mailbox boundary and routes by assigned_core_id /
-    // assigned_cluster_id.
+    // Models the device-side aggregator that knows the source identity but
+    // NOT the manager's internal slot mapping. Stamps {assigned_core_id,
+    // assigned_cluster_id} alongside the SW payload {return_value, task_id},
+    // packs into an AXI word, writes the shared mailbox. The DUT looks up
+    // slot_id from the scoreboard inverse table at the mbox boundary.
     automatic axi_pkg::resp_t                   resp = '0;
-    automatic bingo_hw_manager_done_info_full_t done_info = '0;
+    automatic bingo_hw_manager_done_info_mbox_t mbox_payload = '0;
     automatic device_axi_lite_data_t            done_payload;
     automatic device_axi_lite_addr_t            done_addr;
     done_addr[DEV_AW-1:DEV_AW-ChipIdWidth] = chip;
     done_addr[DEV_AW-ChipIdWidth-1:0]      = DONE_QUEUE_BASE;
 
-    done_info.task_id             = task_id;
-    done_info.return_value        = return_value;
-    done_info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
-    done_info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
-    // Phase 0: slot_id == assigned_core_id (identity mapping). Tests with
-    // slot != core will override this field through other paths.
-    done_info.slot_id             = bingo_hw_manager_slot_id_t'(core);
-    done_payload                  = device_axi_lite_data_t'(done_info);
+    mbox_payload.task_id             = task_id;
+    mbox_payload.return_value        = return_value;
+    mbox_payload.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+    mbox_payload.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
+    done_payload                     = device_axi_lite_data_t'(mbox_payload);
 
     wait (!done_queue_lock[chip]);
     done_queue_lock[chip] = 1'b1;

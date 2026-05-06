@@ -253,29 +253,56 @@ module bingo_hw_manager_top #(
     // Kernels that don't return a meaningful value just write 0 (backward compatible).
     typedef logic [7:0]                            bingo_hw_manager_return_value_t;
 
-    // Device → manager AXI-Lite payload: only {return_value, task_id} are SW-visible.
-    // The other fields in done_info_full_t (slot_id, assigned_core_id,
-    // assigned_cluster_id) are HW-stamped in csr_to_fifo based on which physical
-    // CSR channel the write arrived on, and never traverse the device AXI-Lite
-    // bus. This check mirrors the host-side TaskDescHost width check.
-    localparam int unsigned DoneInfoDeviceWidth = $bits(bingo_hw_manager_return_value_t)
+    // SW-visible CSR write payload (TYPE==1 mode): only {return_value, task_id}
+    // are SW-visible. The routing fields in done_info_full_t (assigned_core_id,
+    // assigned_cluster_id, slot_id) are HW-stamped in csr_to_fifo from the
+    // per-core CSR channel index — they never traverse the CSR write data bus.
+    // This check mirrors the host-side TaskDescHost width check.
+    localparam int unsigned DoneInfoCsrWidth = $bits(bingo_hw_manager_return_value_t)
                                                 + $bits(bingo_hw_manager_task_id_t);
-    if (DoneInfoDeviceWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_device_width_check
+    if (DoneInfoCsrWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_csr_width_check
         initial begin
-        $error("Device done-info SW payload {return_value, task_id} width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoDeviceWidth, DeviceAxiLiteDataWidth);
+        $error("Device done-info CSR payload {return_value, task_id} width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoCsrWidth, DeviceAxiLiteDataWidth);
         $finish;
         end
     end
 
-    // SW-visible AXI-Lite payload from device → manager. csr_to_fifo casts the
-    // raw device CSR write to this type and reads the fields by name (instead of
+    // CSR write payload type (TYPE==1 mode). csr_to_fifo casts the raw device
+    // CSR write to this type and reads the fields by name (instead of
     // bit-slicing), so the device→manager SW contract is captured in one place.
-    localparam int unsigned ReservedBitsForDoneInfoAxi = DeviceAxiLiteDataWidth - DoneInfoDeviceWidth;
+    localparam int unsigned ReservedBitsForDoneInfoCsr = DeviceAxiLiteDataWidth - DoneInfoCsrWidth;
     typedef struct packed{
-        logic [ReservedBitsForDoneInfoAxi-1:0]     reserved_bits;
+        logic [ReservedBitsForDoneInfoCsr-1:0]     reserved_bits;
         bingo_hw_manager_return_value_t            return_value;
         bingo_hw_manager_task_id_t                 task_id;
-    } bingo_hw_manager_done_info_axi_t;
+    } bingo_hw_manager_done_info_csr_t;
+
+    // Mailbox-visible AXI-Lite payload (TYPE==0 mode). The shared mailbox can't
+    // tell who wrote, so the writer (a device-side aggregator that knows the
+    // source identity) must include {assigned_core_id, assigned_cluster_id}.
+    // slot_id is NOT included — it's a HW-internal mapping that may be re-bound
+    // at runtime by the scoreboard, and SW/aggregator must not need to track
+    // it. The manager looks slot_id up from the scoreboard inverse table at
+    // mbox dequeue, mirroring how csr_to_fifo stamps slot_id from the per-core
+    // channel index in CSR mode.
+    localparam int unsigned DoneInfoMboxWidth = $bits(bingo_hw_manager_return_value_t)
+                                              + $bits(bingo_hw_manager_assigned_cluster_id_t)
+                                              + $bits(bingo_hw_manager_assigned_core_id_t)
+                                              + $bits(bingo_hw_manager_task_id_t);
+    if (DoneInfoMboxWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_mbox_width_check
+        initial begin
+        $error("Done-info mailbox payload width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoMboxWidth, DeviceAxiLiteDataWidth);
+        $finish;
+        end
+    end
+    localparam int unsigned ReservedBitsForDoneInfoMbox = DeviceAxiLiteDataWidth - DoneInfoMboxWidth;
+    typedef struct packed{
+        logic [ReservedBitsForDoneInfoMbox-1:0]    reserved_bits;
+        bingo_hw_manager_return_value_t            return_value;
+        bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
+        bingo_hw_manager_assigned_core_id_t        assigned_core_id;
+        bingo_hw_manager_task_id_t                 task_id;
+    } bingo_hw_manager_done_info_mbox_t;
 
     // Full stamped done-info — the SW-visible payload (return_value + task_id)
     // augmented with HW-stamped routing/slot metadata. Carried verbatim through
@@ -1632,7 +1659,23 @@ module bingo_hw_manager_top #(
             .mbox_empty_o(done_queue_mbox_empty     ),
             .mbox_flush_i(1'b0)
         );
-        assign cur_done_queue_info_axi = bingo_hw_manager_done_info_full_t'(done_queue_mbox_data);
+        // Parse the mailbox AXI word as the writer-visible payload (no slot_id).
+        // HW stamps slot_id from the scoreboard inverse table, indexed by the
+        // routing identity the writer provided. This matches the CSR mode
+        // contract — neither path requires SW/aggregator to know slot_id.
+        bingo_hw_manager_done_info_mbox_t cur_done_queue_mbox_payload;
+        assign cur_done_queue_mbox_payload = bingo_hw_manager_done_info_mbox_t'(done_queue_mbox_data);
+
+        always_comb begin
+            cur_done_queue_info_axi.return_value        = cur_done_queue_mbox_payload.return_value;
+            cur_done_queue_info_axi.assigned_cluster_id = cur_done_queue_mbox_payload.assigned_cluster_id;
+            cur_done_queue_info_axi.assigned_core_id    = cur_done_queue_mbox_payload.assigned_core_id;
+            cur_done_queue_info_axi.task_id             = cur_done_queue_mbox_payload.task_id;
+            cur_done_queue_info_axi.slot_id             = scoreboard_inv_table[
+                cur_done_queue_mbox_payload.assigned_cluster_id][
+                cur_done_queue_mbox_payload.assigned_core_id];
+        end
+
         // Pop the mailbox when the target per-(core,cluster) FIFO accepts it
         assign done_queue_mbox_pop = !done_queue_mbox_empty &&
                                      !done_q_full[cur_done_queue_info_axi.assigned_core_id][cur_done_queue_info_axi.assigned_cluster_id];
@@ -1741,7 +1784,7 @@ module bingo_hw_manager_top #(
             .csr_req_t (csr_req_t),
             .csr_rsp_t (csr_rsp_t),
             .data_t    (device_axi_lite_data_t),
-            .bingo_hw_manager_done_info_axi_t  (bingo_hw_manager_done_info_axi_t),
+            .bingo_hw_manager_done_info_csr_t  (bingo_hw_manager_done_info_csr_t),
             .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t),
             .bingo_hw_manager_slot_id_t (bingo_hw_manager_slot_id_t)
         ) i_bingo_hw_manager_csr_to_fifo (

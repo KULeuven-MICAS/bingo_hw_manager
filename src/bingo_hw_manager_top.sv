@@ -1721,28 +1721,15 @@ module bingo_hw_manager_top #(
         end
     end
 
-    // Per-(core, cluster) done queue pop logic:
-    // Pop when the checkout queue head for this (core, cluster) is a normal task
-    // AND the done-queue head's slot_id matches the checkout head's slot_id
-    // AND the arbiter accepted the dep_set. No cross-core or cross-cluster blocking.
-    //
-    // Routing to per-(core, cluster) FIFOs stays physical (assigned_core_id / assigned_cluster_id).
-    // The slot_id check is the logical match key — matches Python golden at bingo_sim_chiplet.py:449/460.
-    // Back-compat: when slot_id == assigned_core_id (today's identity mapping), this check is
-    // trivially satisfied because the done arrived in done_q[core][cluster] only if its core_id==core.
+    // Per-(core, cluster) done queue pop logic.
     always_comb begin
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                // Normal (2'b00) and gating (2'b10) tasks need done_queue match
-                // Routing to per-(core, cluster) FIFOs is physical (by assigned_core_id / assigned_cluster_id).
-                // The slot_id equality check is the logical match key — ensures the head of this core's
-                // done queue corresponds to the task currently at the head of this core's checkout queue.
-                // Matches Python golden model at bingo_sim_chiplet.py:449/460.
-                // Back-compat: with slot_id == assigned_core_id (today's identity mapping), the check is
-                // trivially satisfied because the done arrived in done_q[core][cluster] only if its core_id == core.
                 done_q_pop[core][cluster] = !done_q_empty[core][cluster] &&
                     (checkout_queue_data_out[core][cluster].task_type == TT_NORMAL ||
                      checkout_queue_data_out[core][cluster].task_type == TT_GATING) &&
+                    // Scoreboard's logical match: physical routing alone isn't enough
+                    // once the scoreboard rebinds slots (slot_id ≠ assigned_core_id).
                     (done_q_info[core][cluster].slot_id == checkout_queue_data_out[core][cluster].slot_id) &&
                     stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
             end

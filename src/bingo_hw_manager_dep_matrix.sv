@@ -64,6 +64,8 @@ module bingo_hw_manager_dep_matrix #(
     logic [COUNTER_WIDTH-1:0] counter_d [DEP_MATRIX_ROWS][DEP_MATRIX_COLS];
     logic [COUNTER_WIDTH-1:0] counter_q [DEP_MATRIX_ROWS][DEP_MATRIX_COLS];
     logic [DEP_MATRIX_ROWS-1:0] dep_matrix_clear_row;
+    // Per-(row, col) "required but currently unsatisfied" mask used by the row check.
+    logic [DEP_MATRIX_ROWS-1:0][DEP_MATRIX_COLS-1:0] dep_check_unsatisfied;
 
     // dep_set_ready is ALWAYS high — no overlap rejection, no backpressure
     assign dep_set_ready_o = '1;
@@ -95,13 +97,11 @@ module bingo_hw_manager_dep_matrix #(
         // WAIT_FOR_BIND_COL is conventionally the highest column index.
         // Same-cycle composition with dep_set is safe because the saturating
         // increment cannot lose signals (cell saturates at 0xFF).
-        if (bind_set_valid_i && (DEP_MATRIX_COLS > DEP_MATRIX_ROWS)) begin
-            automatic int unsigned bind_col = DEP_MATRIX_COLS - 1;
-            automatic int unsigned bind_row = bind_set_slot_i;
-            if (bind_row < DEP_MATRIX_ROWS) begin
-                if (counter_d[bind_row][bind_col] < {COUNTER_WIDTH{1'b1}}) begin
-                    counter_d[bind_row][bind_col] = counter_d[bind_row][bind_col] + 1;
-                end
+        if (bind_set_valid_i && (DEP_MATRIX_COLS > DEP_MATRIX_ROWS)
+                && (bind_set_slot_i < DEP_MATRIX_ROWS)) begin
+            if (counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] < {COUNTER_WIDTH{1'b1}}) begin
+                counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] =
+                    counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] + 1;
             end
         end
     end
@@ -133,20 +133,20 @@ module bingo_hw_manager_dep_matrix #(
         end
     end
 
-    // Row check: all required counters >= 1
+    // Row check: all required counters >= 1.
+    // For each (row, col), mark a bit if that column is required by the check
+    // code but its counter is currently zero. A row is satisfied iff none of
+    // its bits are set (NOR-reduction over the row's mask).
     always_comb begin
-        dep_check_result_o = '0;
+        dep_check_result_o   = '0;
+        dep_check_unsatisfied = '0;
         for (int r = 0; r < DEP_MATRIX_ROWS; r++) begin
+            for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
+                dep_check_unsatisfied[r][c] = dep_check_code_i[r][c]
+                                            && (counter_q[r][c] == '0);
+            end
             if (dep_check_valid_i[r]) begin
-                automatic logic all_satisfied = 1'b1;
-                for (int c = 0; c < DEP_MATRIX_COLS; c++) begin
-                    if (dep_check_code_i[r][c]) begin
-                        if (counter_q[r][c] == '0) begin
-                            all_satisfied = 1'b0;
-                        end
-                    end
-                end
-                dep_check_result_o[r] = all_satisfied;
+                dep_check_result_o[r] = ~|dep_check_unsatisfied[r];
             end
         end
     end

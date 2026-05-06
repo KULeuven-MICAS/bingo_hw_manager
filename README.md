@@ -12,52 +12,74 @@ Host / Software Runtime
          |
          | Task descriptors (64-bit packed structs)
          v
-  +--------------+       +------------------------------------------+
-  | Task Queue   |       |  Per-Chiplet HW Manager                  |
-  | (AXI-Lite or |------>|                                          |
-  |  Master)     |       |  +-- stream_demux (by core_id) ------+  |
-  +--------------+       |  |                                    |  |
-                         |  v                                    |  |
-                +--------+----------+   +--------+----------+   |  |
-                | Waiting Queue     |   | Waiting Queue     |...|  |
-                | Core 0 (depth 8)  |   | Core 1 (depth 8)  |   |  |
-                +--------+----------+   +--------+----------+   |  |
-                         |                       |               |  |
-                    dep_check_manager FSM    dep_check_manager   |  |
-                    (IDLE->CHECK->QUEUE->FINISH)                 |  |
-                         |                       |               |  |
-                +--------v-----------+-----------v---------+     |  |
-                |  Counter-Based Dependency Matrix         |     |  |
-                |  (per cluster, 8-bit saturating counters)|     |  |
-                |  set: counter++ (always accepts)         |     |  |
-                |  check: all required counters >= 1       |     |  |
-                |  clear: counter-- (on successful check)  |     |  |
-                +--------+-----------+---------------------+     |  |
-                         |                                       |  |
-          +--------------+--------------+                        |  |
-          v                             v                        |  |
-  +-------+--------+   +-------+--------+                       |  |
-  | Ready Queue    |   | Checkout Queue |                       |  |
-  | [core][cluster]|   | [core][cluster]|                       |  |
-  | -> Device Core |   | -> dep_set     |                       |  |
-  +----------------+   +-------+--------+                       |  |
-          |                     |                                |  |
-     (execute)        +---------+----------+                     |  |
-          |           |                    |                     |  |
-          v      Local dep_set      Remote dep_set (H2H)        |  |
-  +-------+--------+  |           +-------------------+         |  |
-  | Done Queue     |  |           | Chiplet Dep Set   |         |  |
-  | [core][cluster]|  |           | AXI-Lite Master   |------+  |  |
-  | (per-pair FIFO)|  |           | -> remote chiplet |      |  |  |
-  +-------+--------+  |           +-------------------+      |  |  |
-          |            |                                      |  |  |
-          +----> Arbiter -> dep_matrix.set_column()           |  |  |
-                                                              |  |  |
-  +-----------------------------------------------------------+  |  |
-  | From Remote Chiplets (H2H)                                   |  |
-  |   -> Chiplet Done Queue -> Arbiter -> dep_matrix.set_column()|  |
-  +--------------------------------------------------------------+  |
-  +------------------------------------------------------------------+
+  +--------------+       +-------------------------------------------------+
+  | Task Queue   |       |  Per-Chiplet HW Manager                         |
+  | (AXI-Lite or |------>|                                                 |
+  |  Master)     |       |  +-- scoreboard (per cluster) ---------------+ |
+  +--------------+       |  |   maps host's assigned_core_id -> slot_id | |
+                         |  |   (identity at reset; rebindable)         | |
+                         |  +-- stream_demux (by core_id) --------------+ |
+                         |  |                                              |
+                         |  v                                              |
+                +--------+----------+   +--------+----------+             |
+                | Waiting Queue     |   | Waiting Queue     |...          |
+                | Core 0 (depth 8)  |   | Core 1 (depth 8)  |             |
+                +--------+----------+   +--------+----------+             |
+                         |                       |                         |
+                    dep_check_manager FSM    dep_check_manager             |
+                    (IDLE->CHECK->QUEUE->FINISH)                           |
+                         |   ^                   |   ^                     |
+                         |   |                   |   |                     |
+                         |   +-- bind_resolver --+---+   (per-core,        |
+                         |       merges BIND fields into parked RESERVE,   |
+                         |       pulses WAIT_FOR_BIND col on dep matrix;   |
+                         |       BIND src 3-way mux: local > rvdb > remote)|
+                         |                                                 |
+                    cond_exec_controller (CERF, 32-entry per chiplet)      |
+                       gating tasks write CERF on completion;              |
+                       downstream tasks dispatch/skip per group bit;       |
+                       skipped tasks still propagate dep_set               |
+                         |                       |                         |
+                +--------v-----------+-----------v---------+               |
+                |  Counter-Based Dependency Matrix         |               |
+                |  (per cluster, 8-bit saturating counters,|               |
+                |   plus WAIT_FOR_BIND_COL for JIT-DFG)    |               |
+                |  set: counter++ (always accepts)         |               |
+                |  check: all required counters >= 1       |               |
+                |  clear: counter-- (on successful check)  |               |
+                +--------+-----------+---------------------+               |
+                         |                                                 |
+          +--------------+--------------+                                  |
+          v                             v                                  |
+  +-------+--------+   +-------+--------+                                  |
+  | Ready Queue    |   | Checkout Queue |                                  |
+  | [core][cluster]|   | [core][cluster]|                                  |
+  | -> Device Core |   | -> dep_set     |                                  |
+  +----------------+   +-------+--------+                                  |
+          |                     |                                          |
+     (execute)        +---------+----------+                               |
+          |           |                    |                               |
+          v      Local dep_set      Remote dep_set (H2H)                   |
+  +-------+--------+  |           +-------------------+                    |
+  | Done Queue     |  |           | Chiplet Dep Set   |                    |
+  | [core][cluster]|  |           | AXI-Lite Master   |------+             |
+  | (per-pair FIFO,|  |           | -> remote chiplet |      |             |
+  |  carries       |  |           +-------------------+      |             |
+  |  return_value) |  |                                      |             |
+  +---+---+--------+  |                                      |             |
+      |   |           |                                      |             |
+      |   +--> rvdb_lookup --> bind_table                    |             |
+      |        (per cluster, return_value indexes 64x64-bit  |             |
+      |         SRAM; synthesises BIND -> bind_resolver,     |             |
+      |         no host round-trip)                          |             |
+      |                                                      |             |
+      +----> Arbiter -> dep_matrix.set_column()              |             |
+                                                             |             |
+  +----------------------------------------------------------+             |
+  | From Remote Chiplets (H2H)                                             |
+  |   -> Chiplet Done Queue -> Arbiter -> dep_matrix.set_column()          |
+  |   -> Remote BIND -> bind_resolver (cross-chiplet JIT-DFG)              |
+  +------------------------------------------------------------------------+
 ```
 
 ## Task Descriptor Format

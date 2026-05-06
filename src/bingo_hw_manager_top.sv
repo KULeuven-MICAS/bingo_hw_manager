@@ -1393,13 +1393,13 @@ module bingo_hw_manager_top #(
                     // dep_matrix is slot-indexed: column = logical slot_id of the signaling task
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col= checkout_queue_data_out[core][cluster].slot_id;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
-                    // Handshake from the checkout demux and the per-(core,cluster) done queue
-                    // Dummy set: no done queue check needed
-                    // Normal: per-(core,cluster) done queue must be non-empty
-                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = (checkout_queue_data_out[core][cluster].task_type == TT_DUMMY) ?
-                                                                                      stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster] :
-                                                                                      ((stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster]) &&
-                                                                                       (!done_q_empty[core][cluster]));
+                    // Fire when the checkout entry is at the head AND either
+                    //   - dummy_set (no execution → no done_q entry to wait for), OR
+                    //   - the per-(core,cluster) done_q has the matching completion.
+                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] =
+                        stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster] &&
+                        ((checkout_queue_data_out[core][cluster].task_type == TT_DUMMY) ||
+                         !done_q_empty[core][cluster]);
             end
         end
         // For Chiplet Set Queue

@@ -496,9 +496,14 @@ module bingo_hw_manager_top #(
     ////////////////////////////////
     // Ready Queue Filter Signals
     ////////////////////////////////
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_inp_valid;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_inp_ready;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_drop;
+    // Stage 1: drop dummy-set tasks
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_dummy_set_inp_valid;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_dummy_set_inp_ready;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_dummy_set_drop;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_dummy_set_oup_valid;
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_dummy_set_oup_ready;
+    // Stage 2: drop CERF conditionally-skipped tasks
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_cond_exec_skip_drop;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_oup_valid;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_oup_ready;
 
@@ -1054,14 +1059,14 @@ module bingo_hw_manager_top #(
         ) i_stream_demux_from_waiting_dep_check_queue_to_ready_and_checkout_queue (
             .inp_valid_i ( demux_ready_and_checkout_queue_inp_valid[core]    ),
             .inp_ready_o ( demux_ready_and_checkout_queue_inp_ready[core]    ),
-            .oup_sel_i   ( live_task_desc[core].assigned_cluster_id ),
+            .oup_sel_i   ( live_task_desc[core].assigned_cluster_id          ),
             .oup_valid_o ( demux_ready_and_checkout_queue_oup_valid[core]    ),
             .oup_ready_i ( demux_ready_and_checkout_queue_oup_ready[core]    )
         );
 
         always_comb begin : connect_demux_ready_and_checkout_queue_ready_signals
             for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin 
-                demux_ready_and_checkout_queue_oup_ready[core][cluster] = ready_queue_filter_inp_ready[core][cluster] && !checkout_queue_full[core][cluster];
+                demux_ready_and_checkout_queue_oup_ready[core][cluster] = ready_queue_filter_dummy_set_inp_ready[core][cluster] && !checkout_queue_full[core][cluster];
             end
         end
     end
@@ -1466,26 +1471,34 @@ module bingo_hw_manager_top #(
     // This is the ready queue interface
     // Device will read ready tasks info from this queue via 32bit AXI Lite
     // The information contains only task ID
-    // Before each ready queue, there is a filter to filter out the dummy set tasks since it will not be run on the core
+    // Before each ready queue, two cascaded filters:
+    //   1. drop dummy-set tasks (won't run on the core, only set deps downstream)
+    //   2. drop CERF conditionally-skipped tasks (skip execution, propagate deps)
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_ready_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_ready_queue_per_core_per_cluster
-            stream_filter i_stream_filter_for_ready_queue_dummy_set (
-                .valid_i (   ready_queue_filter_inp_valid[core][cluster]       ),
-                .ready_o (   ready_queue_filter_inp_ready[core][cluster]       ),
-                .drop_i  (   ready_queue_filter_drop[core][cluster]            ),
-                .valid_o (   ready_queue_filter_oup_valid[core][cluster]       ),
-                .ready_i (   ready_queue_filter_oup_ready[core][cluster]       )
-            );
-            assign ready_queue_filter_inp_valid[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster];
-            // Drop the dummy set tasks
-            // Drop from ready queue if:
-            // 1. Dummy set task (task_type==01, dep_set_en==1) — existing behavior
-            // 2. CERF: conditionally skipped task — skip execution but propagate deps
+            // Stage 1: drop dummy-set tasks (task_type==TT_DUMMY, dep_set_en==1)
             // JIT-DFG: read live (post-bind) view for the dummy_set drop test.
-            assign ready_queue_filter_drop[core][cluster] =
-                ((live_task_desc[core].task_type == TT_DUMMY) &&
-                 (live_task_desc[core].dep_set_info.dep_set_en == 1'b1)) ||
-                cond_exec_skip[core];
+            stream_filter i_stream_filter_for_ready_queue_dummy_set (
+                .valid_i (   ready_queue_filter_dummy_set_inp_valid[core][cluster]       ),
+                .ready_o (   ready_queue_filter_dummy_set_inp_ready[core][cluster]       ),
+                .drop_i  (   ready_queue_filter_dummy_set_drop[core][cluster]            ),
+                .valid_o (   ready_queue_filter_dummy_set_oup_valid[core][cluster]       ),
+                .ready_i (   ready_queue_filter_dummy_set_oup_ready[core][cluster]       )
+            );
+            assign ready_queue_filter_dummy_set_inp_valid[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster];
+            assign ready_queue_filter_dummy_set_drop[core][cluster] =
+                (live_task_desc[core].task_type == TT_DUMMY) &&
+                (live_task_desc[core].dep_set_info.dep_set_en == 1'b1);
+
+            // Stage 2: drop CERF conditionally-skipped tasks
+            stream_filter i_stream_filter_for_ready_queue_cond_exec_skip (
+                .valid_i (   ready_queue_filter_dummy_set_oup_valid[core][cluster]       ),
+                .ready_o (   ready_queue_filter_dummy_set_oup_ready[core][cluster]       ),
+                .drop_i  (   ready_queue_filter_cond_exec_skip_drop[core][cluster]       ),
+                .valid_o (   ready_queue_filter_oup_valid[core][cluster]                 ),
+                .ready_i (   ready_queue_filter_oup_ready[core][cluster]                 )
+            );
+            assign ready_queue_filter_cond_exec_skip_drop[core][cluster] = cond_exec_skip[core];
             assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
             if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_ready_queue_axi_lite_mailbox                               
                 bingo_hw_manager_read_mailbox #(

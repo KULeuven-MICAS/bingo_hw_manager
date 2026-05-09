@@ -14,8 +14,9 @@ Host / Software Runtime
          v
   +--------------+       +-------------------------------------------------+
   | Task Queue   |       |  Per-Chiplet HW Manager                         |
-  | (AXI-Lite or |------>|                                                 |
-  |  Master)     |       |  +-- scoreboard (per cluster) ---------------+ |
+  | (AXI-Lite    |------>|  (one unified outbound AXI-Lite master:         |
+  |  Slave or    |       |   task fetch + chiplet dep_set send)            |
+  |  via DMA)    |       |  +-- scoreboard (per cluster) ---------------+ |
   +--------------+       |  |   maps host's assigned_core_id -> slot_id | |
                          |  |   (identity at reset; rebindable)         | |
                          |  +-- stream_demux (by core_id) --------------+ |
@@ -30,10 +31,9 @@ Host / Software Runtime
                     (IDLE->CHECK->QUEUE->FINISH)                           |
                          |   ^                   |   ^                     |
                          |   |                   |   |                     |
-                         |   +-- bind_resolver --+---+   (per-core,        |
-                         |       merges BIND fields into parked RESERVE,   |
-                         |       pulses WAIT_FOR_BIND col on dep matrix;   |
-                         |       BIND src 3-way mux: local > rvdb > remote)|
+                         |       (no HW BIND/RESERVE machinery —           |
+                         |        conditional dispatch is handled in       |
+                         |        software via CERF gating; see below)     |
                          |                                                 |
                     cond_exec_controller (CERF, 32-entry per chiplet)      |
                        gating tasks write CERF on completion;              |
@@ -43,7 +43,7 @@ Host / Software Runtime
                 +--------v-----------+-----------v---------+               |
                 |  Counter-Based Dependency Matrix         |               |
                 |  (per cluster, 8-bit saturating counters,|               |
-                |   plus WAIT_FOR_BIND_COL for JIT-DFG)    |               |
+                |   square NUM_CORES x NUM_CORES counters) |               |
                 |  set: counter++ (always accepts)         |               |
                 |  check: all required counters >= 1       |               |
                 |  clear: counter-- (on successful check)  |               |
@@ -61,24 +61,23 @@ Host / Software Runtime
           |           |                    |                               |
           v      Local dep_set      Remote dep_set (H2H)                   |
   +-------+--------+  |           +-------------------+                    |
-  | Done Queue     |  |           | Chiplet Dep Set   |                    |
-  | [core][cluster]|  |           | AXI-Lite Master   |------+             |
-  | (per-pair FIFO,|  |           | -> remote chiplet |      |             |
-  |  carries       |  |           +-------------------+      |             |
-  |  return_value) |  |                                      |             |
-  +---+---+--------+  |                                      |             |
-      |   |           |                                      |             |
-      |   +--> rvdb_lookup --> bind_table                    |             |
-      |        (per cluster, return_value indexes 64x64-bit  |             |
-      |         SRAM; synthesises BIND -> bind_resolver,     |             |
-      |         no host round-trip)                          |             |
-      |                                                      |             |
-      +----> Arbiter -> dep_matrix.set_column()              |             |
-                                                             |             |
+  | Done Queue     |  |           | Chiplet Dep Set   |--+                 |
+  | [core][cluster]|  |           | (AW/W into the    |  |                 |
+  | (per-pair FIFO,|  |           |  unified master)  |  |                 |
+  |  carries       |  |           +-------------------+  |                 |
+  |  return_value  |  |                                  |                 |
+  |  -> CERF mask) |  |                                  v                 |
+  +---+------------+  |                          +--------------------+    |
+      |               |                          | unified outbound   |    |
+      +----> Arbiter -> dep_matrix.set_column()  |  AXI-Lite master   |    |
+                                                 | (c0 task fetch /   |--->| host mem
+                                                 |  c2 chiplet send;  |--->| H2H xbar
+                                                 |  AR/R + AW/W       |    |
+                                                 |  inline merge)     |    |
+                                                 +--------------------+    |
   +----------------------------------------------------------+             |
   | From Remote Chiplets (H2H)                                             |
   |   -> Chiplet Done Queue -> Arbiter -> dep_matrix.set_column()          |
-  |   -> Remote BIND -> bind_resolver (cross-chiplet JIT-DFG)              |
   +------------------------------------------------------------------------+
 ```
 
@@ -88,19 +87,18 @@ Each task is a 64-bit packed struct pushed into the task queue:
 
 | Field | Width | Description |
 |-------|-------|-------------|
-| `task_type` | 2 | `00`=normal, `01`=dummy (sync only), `10`=gating (writes CERF), `11`=JIT-DFG (reserve / bind) |
-| `is_bind` | 1 | When `task_type=2'b11`: `0`=RESERVE, `1`=BIND. Ignored otherwise |
+| `task_type` | 2 | `00`=normal, `01`=dummy (sync only), `10`=gating (writes CERF). HW does not have a JIT/RESERVE/BIND descriptor type; conditional dispatch is expressed via CERF gating in software. |
 | `task_id` | 12 | Unique identifier (0–4095) |
 | `assigned_chiplet_id` | 8 | Target chiplet |
 | `assigned_cluster_id` | log2(clusters) | Target cluster within chiplet |
 | `assigned_core_id` | log2(cores) | Target core within cluster |
 | `dep_check_en` | 1 | Enable dependency checking before dispatch |
-| `dep_check_code` | N_CORES + 1 | Bitmask: which columns to check in dep matrix. The extra column is `WAIT_FOR_BIND_COL` (JIT-DFG) |
-| `dep_set_en` | 1 | Enable dependency signaling after completion. **Repurposed as `rvdb_chain_en` on a JIT RESERVE.** |
+| `dep_check_code` | N_CORES | Bitmask: which columns to check in dep matrix |
+| `dep_set_en` | 1 | Enable dependency signaling after completion |
 | `dep_set_all_chiplet` | 1 | Broadcast dep_set to all chiplets |
-| `dep_set_chiplet_id` | 8 | Target chiplet for dep_set. **Low 6 bits repurposed as `rvdb_table_base` on an RVDB-armed RESERVE.** |
+| `dep_set_chiplet_id` | 8 | Target chiplet for dep_set |
 | `dep_set_cluster_id` | log2(clusters) | Target cluster for dep_set |
-| `dep_set_code` | N_CORES | Bitmask: which rows to signal in dep matrix. **Low log2(N_CORES) bits repurposed as `rvdb_source_slot` on an RVDB-armed RESERVE.** |
+| `dep_set_code` | N_CORES | Bitmask: which rows to signal in dep matrix |
 | `cond_exec_en` / `cond_exec_group_id` / `cond_exec_invert` | 1 / 5 / 1 | CERF gating |
 
 ## Task Lifecycle
@@ -121,9 +119,7 @@ Each task is a 64-bit packed struct pushed into the task queue:
 
 ### Extensions on this lifecycle
 
-- **CERF gating:** at step 3, a task with `cond_exec_en=1` is skipped if its CERF group bit is unset; the skipped task still propagates `dep_set` (step 7).
-- **JIT-DFG:** a `task_type=2'b11, is_bind=0` (RESERVE) descriptor parks at step 3 on a synthetic `WAIT_FOR_BIND_COL` dependency. The host issues a matching BIND descriptor; `bind_resolver` merges the executable fields and pulses the WAIT_FOR_BIND counter, unblocking step 4.
-- **RVDB:** a RESERVE with `rvdb_chain_en=1` arms a `rvdb_config[]` entry at push time. When some prior task completes (step 6) with a return value, `rvdb_lookup` indexes the per-cluster `bind_table` and synthesises a BIND that feeds the same `bind_resolver` as a host-issued JIT bind — completing the chain with **zero host involvement**.
+- **CERF gating:** at step 3, a task with `cond_exec_en=1` is skipped if its CERF group bit is unset; the skipped task still propagates `dep_set` (step 7). This is the *only* HW conditional-dispatch primitive — runtime-DFG behaviour (1-of-N selection, dynamic skip/run, etc.) is expressed by the compiler as multiple CERF-gated tasks pre-pushed at compile time, with a gating task writing the appropriate CERF bits to select which branch runs. See "Streaming partial-DFG dispatch" below.
 
 ## Counter-Based Dependency Matrix
 
@@ -197,10 +193,12 @@ bingo_hw_manager_top
  |    +-- stream_demux (route to cluster dep matrix)
  |    +-- stream_demux (route to core within cluster)
  |
- +-- H2H Communication
- |    +-- Chiplet Dep Set Master (AXI-Lite master, 1x)
+ +-- Outbound master path
+ |    +-- task_queue_master (AXI-Lite AR/R reads, when TASK_QUEUE_TYPE=1)
+ |    +-- chiplet_dep_set (AXI-Lite AW/W writes to remote chiplets)
+ |    +-- inline channel merge onto one unified_axi_lite_req_o port
  |    +-- stream_arbiter (chiplet dep set, from all cores)
- |    +-- Chiplet Done Queue (write_mailbox, 1x)
+ |    +-- Chiplet Done Queue (write_mailbox, 1x, RX from peer chiplets)
  |
  +-- Power Manager (1x)
       +-- bingo_hw_manager_pm (idle-based clock gating)
@@ -240,11 +238,22 @@ bingo_hw_manager_top
 When a task's `dep_set_chiplet_id != chip_id_i`, the dependency signal is routed to a remote chiplet via the H2H path:
 
 1. Checkout queue entry routed to chiplet dep_set arbiter
-2. `bingo_hw_manager_chiplet_dep_set` module sends AXI-Lite write to remote chiplet's mailbox
+2. `bingo_hw_manager_chiplet_dep_set` emits AW/W into the unified outbound AXI-Lite master (`unified_axi_lite_req_o`); the system interconnect routes it to the remote chiplet's mailbox.
 3. Remote chiplet receives via `from_remote_chiplet_axi_lite_req_i` into its chiplet done queue
 4. Remote chiplet processes the signal through its dep matrix set arbiter
 
 Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simultaneously.
+
+## Unified Outbound AXI-Lite Master
+
+All outgoing master traffic from the manager flows through one AXI-Lite port (`unified_axi_lite_req_o`/`unified_axi_lite_resp_i`). The bus carries two independent kinds of traffic, merged inline at the top:
+
+| Channels | Source | Address space |
+|----------|--------|---------------|
+| AR/R | `task_queue_master` (when `TASK_QUEUE_TYPE=1`) | `task_list_base_addr_i + n * sizeof(task_desc)` |
+| AW/W | `chiplet_dep_set` | `chiplet_mailbox_base_addr_i` (chip-id stamped into upper bits) |
+
+Because AR/R and AW/W are independent in AXI-Lite, the two clients never contend — no arbiter is needed.
 
 ## Dependencies
 
@@ -253,11 +262,14 @@ Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simu
 
 ## Conditional-DFG Hardware Extensions
 
-The base scheduler is extended with **four** hardware features that let it execute data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths) without going back to the host between branches. All are pure hardware — no on-chip learning, no host-in-the-loop.
+The HW supports data-dependent AI workloads (MoE, speculative decoding, early exit, Mixture of Depths) through **one** mechanism — CERF. Higher-level conditional-DFG patterns (1-of-N selection, return-value-driven binding) are expressed in software at the compiler / runtime layer; the HW exposes only the primitive that all of them lower onto.
 
 ### CERF — Conditional Execution Register File
 
-A 32-entry CERF per chiplet enables runtime task skipping. A "gating" task (e.g. an MoE router) writes the CERF on completion; downstream tasks tagged with a CERF group are either dispatched or skipped depending on the bit:
+A 32-bit CERF per chiplet is the **only** HW conditional-dispatch primitive. Two roles:
+
+1. A "gating" task (`task_type=TT_GATING`, e.g. an MoE router) writes one or more CERF bits on completion based on its kernel return value.
+2. Any downstream task tagged with `cond_exec_en=1` and a `cond_exec_group_id` is dispatched or skipped depending on the bit (or its inverse, via `cond_exec_invert`). Skipped tasks **still propagate their `dep_set`** so downstream consumers never deadlock.
 
 ```python
 dfg.bingo_add_edge(router, expert_0, cond=True)   # conditional edge
@@ -266,31 +278,19 @@ compile_dfg(dfg)                                    # auto-assigns CERF groups
 run_sim(dfg, config, active_nodes={expert_0})       # user never sees group IDs
 ```
 
-Skipped tasks still propagate their `dep_set` so downstream consumers do not deadlock.
+### Higher-level conditional-DFG patterns (compiler-lowered onto CERF)
+
+The user-facing CDFG (`cdfg.if`, `cdfg.switch`, etc.) is lowered onto CERF by the compiler. For each conditional construct:
+
+- **Binary skip/run** (`if cond { A }`): one CERF bit; A is gated by the bit.
+- **N-way selection** (`switch v { 0: A0, 1: A1, ... }`): N CERF bits; the gating task sets exactly one based on `v`. All N task descriptors are pre-pushed; only the matching one runs, the rest skip-and-propagate.
+- **Return-value-driven dispatch (RVDB)**: a software-only pattern — the gating kernel uses its return value to drive CERF bits, and the compiler generates the N pre-pushed candidates. Earlier prototypes implemented this in HW (RESERVE / BIND / external bind_table); the current architecture moves all of it to software since the same observable behaviour is achievable via CERF + N pre-pushed branches at substantially less HW complexity.
+
+The HW/SW co-design boundary: HW owns the *primitive* (one CERF register, one comparator per dispatch lane), the compiler owns the *abstraction* (CDFG operators, fan-out analysis, group-ID allocation). This keeps the RTL small enough to reason about while letting the user-facing programming model evolve independently.
 
 ### Task-Slot Scoreboard (GPU-style dependency decoupling)
 
 The host writes only `assigned_core_id`; HW synthesizes a logical `slot_id := assigned_core_id` at the AXI decode point, and the dependency matrix is indexed by the synthesized `slot_id`. A per-cluster scoreboard maintains the slot↔core mapping (identity at reset) so a future fault-recovery controller can rebind a slot to a different core without touching any dependency encoding the host already produced — analogous to GPU warp-ID vs SM-ID decoupling. `slot_id` is a HW-internal concept; no SW programmer ever sets it.
-
-### JIT-DFG — Streaming partial-DFG dispatch (`task_type=2'b11`)
-
-The host can push a **RESERVE** descriptor (`task_type=2'b11, is_bind=0`) for a slot whose executable fields are not yet known. The slot parks in `dep_check_manager` blocked on a synthetic `WAIT_FOR_BIND_COL` dependency. Later, the host issues a **BIND** descriptor (`task_type=2'b11, is_bind=1`) carrying the kernel + args + dep_set; `bind_resolver` matches the BIND to its RESERVE by `(cluster, assigned_core_id)` (which HW maps to the internal `slot_id`), merges the bind fields into a shadow flop, and pulses the `WAIT_FOR_BIND` counter — the slot dispatches in the next cycle as if it had been a normal task. Eliminates DFG re-issue cost for streaming workloads.
-
-The mechanism is verified end-to-end across 4 testbenches (basic, bind-before-reserve, double-bind SVA, orphan force-drain). 
-
-### RVDB — Return-Value-Driven Binding
-
-Extends JIT-DFG so the HW reads a completed task's **return value** and uses it to look up the next task's bind from a host-installed **bind table** — **without going through the host runtime**. The kernel return value is forwarded via the device CSR (`{return_value[7:0], task_id[11:0]}` packed into CSR `0x5ff`), captured in `done_info.return_value`, and indexed by `rvdb_lookup` into a per-cluster 64×64-bit `bind_table` SRAM. The synthesised BIND feeds the same `bind_resolver` as a host-issued bind via a 3-way input mux (priority: local > rvdb > remote).
-
-A RESERVE marks itself RVDB-driven by setting **repurposed bits** in `dep_set_info`:
-```
-dep_set_info.dep_set_en              → rvdb_chain_en       (1 bit)
-dep_set_info.dep_set_code[1:0]       → rvdb_source_slot    (which slot's return value drives the chain)
-dep_set_info.dep_set_chiplet_id[5:0] → rvdb_table_base     (offset into the shared bind table)
-```
-No new descriptor flavour, no new task_type. When `rvdb_chain_en=1`, the reserve push side-effects a write to the per-cluster `rvdb_config[]` register. When the source slot completes, `rvdb_lookup` synthesises the bind autonomously.
-
-Verified end-to-end on `tb_bingo_hw_manager_rvdb_basic`. Eliminates the per-iteration host round-trip in autoregressive workloads (decoder loops, MoE routing, KV-eviction).
 
 ## Source Files
 
@@ -300,32 +300,27 @@ Verified end-to-end on `tb_bingo_hw_manager_rvdb_basic`. Eliminates the per-iter
 | 0 | `bingo_hw_manager_read_mailbox.sv` | FIFO-to-AXI-Lite read bridge |
 | 0 | `bingo_hw_manager_write_mailbox.sv` | AXI-Lite-to-FIFO write bridge |
 | 0 | `bingo_hw_manager_task_queue_master.sv` | AXI-Lite master for task fetching |
-| 0 | `bingo_hw_manager_csr_to_fifo*.sv` | CSR interface adapters (RVDB return_value extraction) |
-| 1 | `bingo_hw_manager_dep_matrix.sv` | Counter-based dependency matrix (with WAIT_FOR_BIND col for JIT-DFG) |
-| 1 | `bingo_hw_manager_chiplet_dep_set.sv` | H2H AXI-Lite master |
-| 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM (exposes `state_o` for bind_resolver observation) |
+| 0 | `bingo_hw_manager_csr_to_fifo*.sv` | CSR interface adapters (carries `return_value` to CERF gating tasks) |
+| 1 | `bingo_hw_manager_dep_matrix.sv` | Counter-based dependency matrix (square N x N) |
+| 1 | `bingo_hw_manager_chiplet_dep_set.sv` | H2H AXI-Lite master (drives AW/W into the unified port) |
+| 1 | `bingo_hw_manager_dep_check_manager.sv` | Dependency check FSM |
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_scoreboard.sv` | Task-slot scoreboard |
-| 1 | `bingo_hw_manager_bind_resolver.sv` | **JIT-DFG** per-core bind merge unit |
-| 1 | `bingo_hw_manager_bind_table.sv` | **RVDB** per-cluster 64×64-bit bind-descriptor SRAM |
-| 1 | `bingo_hw_manager_rvdb_lookup.sv` | **RVDB** per-cluster lookup unit |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
 
 The test infrastructure includes:
 
-- **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock detection, counter monitoring, structured trace logging, and a per-task `task_return_value_lut` for RVDB stim
+- **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock detection, counter monitoring, structured trace logging, and a per-task `task_return_value_lut` for kernels that need to write CERF on completion
 - **Structured DFG patterns:** serial chain, parallel fork-join, double buffer, diamond, stacked GEMM, multi-chiplet chain
 - **Random DAG stress tests:** 10–40 tasks, 1–4 chiplets, sparse/dense edge configurations
 - **CERF testbenches:** `tb_bingo_hw_manager_cerf_basic` (skip + propagate dep_set), `tb_bingo_hw_manager_cerf_skip`
-- **JIT-DFG testbenches:** basic reserve→bind, bind-before-reserve (pending buffer), double-bind SVA, orphan force-drain
-- **RVDB testbenches:** basic chain (`tb_bingo_hw_manager_rvdb_basic`) — chain dispatches autonomously with no host bind round-trip
 - **Cycle-accurate Python model** (`model/`) mirroring the RTL pipeline behavior
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion
 
-Current regression: **8/8 testbenches pass** (top, 2 CERF, 4 JIT-DFG, 1 RVDB).
+Current regression: **4/4 testbenches pass** (top, dep_matrix, 2 CERF).
 
 ```bash
 # Compile and simulate (requires Questa)
@@ -333,12 +328,9 @@ source /users/micas/fkong/no_backup/src_hemaia_eda.sh
 make clean && make compile.log
 
 # Run any one TB
-cd build && ../scripts/run_vsim.sh --random-seed bingo_hw_manager_rvdb_basic
+cd build && ../scripts/run_vsim.sh --random-seed bingo_hw_manager_cerf_basic
 
 # Run Python model tests
 source ../.venv/bin/activate
 python3 scripts/run_all_tests.py --stress 200
-
-# Run the conditional-DFG evaluation suite (8 experiments)
-python3 scripts/eval_conditional.py
 ```

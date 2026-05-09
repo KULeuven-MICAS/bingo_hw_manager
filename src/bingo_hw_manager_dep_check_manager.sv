@@ -23,10 +23,7 @@ module bingo_hw_manager_dep_check_manager (
     input logic dep_check_ready_i,
     // To ready queue and checkout queue
     output logic ready_and_checkout_queue_valid_o,
-    input logic ready_and_checkout_queue_ready_i,
-    // JIT-DFG: observation hook so bind_resolver can detect the queue head is
-    // parked in WAIT_DEP_CHECK on a RESERVE descriptor and accept binds for it.
-    output logic [1:0] state_o
+    input logic ready_and_checkout_queue_ready_i
 );
     typedef enum logic [1:0]{
         IDLE,
@@ -36,7 +33,6 @@ module bingo_hw_manager_dep_check_manager (
     } dep_check_manager_fsm_t;
 
     dep_check_manager_fsm_t cur_state, next_state;
-    assign state_o = cur_state;
     // State Update
     always_ff @(posedge clk_i, negedge rst_ni) begin
         if (!rst_ni) begin

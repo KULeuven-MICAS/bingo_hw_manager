@@ -9,10 +9,10 @@
 
 // Counter-based dependency matrix.
 //
-// Each cell is an 8-bit saturating counter instead of a single bit.
-// This allows multiple dep_set operations to accumulate on the same cell
-// without overlap rejection, eliminating the deadlock caused by the
-// interaction of overlap detection + done queue HOL blocking.
+// Each cell is an 8-bit saturating counter. Multiple dep_set operations
+// accumulate on the same cell without overlap rejection, eliminating the
+// deadlock caused by the interaction of overlap detection + done queue
+// HOL blocking.
 //
 // Operations:
 //   set_column(col, set_code): increment counter[r][col] for each row r in set_code
@@ -20,19 +20,11 @@
 //   clear_row(row, check_code): decrement counter[row][c] by 1 for each c in check_code
 //
 // dep_set_ready_o is always 1 — no backpressure, no deadlock.
-//
-// JIT-DFG extension:
-//   When DEP_MATRIX_COLS = DEP_MATRIX_ROWS + 1, the highest-index column
-//   (WAIT_FOR_BIND_COL = DEP_MATRIX_COLS - 1) is reserved for JIT bind events.
-//   It is set ONLY via the private bind_set_valid_i / bind_set_slot_i port
-//   pulsed by bind_resolver instances; never via dep_set_code_i.
-//   When DEP_MATRIX_COLS == DEP_MATRIX_ROWS, the bind ports are inert and the
-//   module behaves exactly as before.
 
 module bingo_hw_manager_dep_matrix #(
     // Number of rows (one per core — the consumer/dependent side)
     parameter int unsigned DEP_MATRIX_ROWS = 4,
-    // Number of columns (one per core — the producer/signaling side, plus optional WAIT_FOR_BIND col)
+    // Number of columns (one per core — the producer/signaling side)
     parameter int unsigned DEP_MATRIX_COLS = 4,
     // Counter width per cell (8 bits supports up to 255 pending signals)
     parameter int unsigned COUNTER_WIDTH = 8,
@@ -40,9 +32,7 @@ module bingo_hw_manager_dep_matrix #(
     // pattern to check per row (which columns to check)
     parameter type dep_check_code_t = logic [DEP_MATRIX_COLS-1:0],
     // pattern to write per column (which rows to signal)
-    parameter type dep_set_code_t   = logic [DEP_MATRIX_ROWS-1:0],
-    // slot/row index width for the JIT bind set port
-    parameter int unsigned SLOT_ID_W = (DEP_MATRIX_ROWS > 1) ? $clog2(DEP_MATRIX_ROWS) : 1
+    parameter type dep_set_code_t   = logic [DEP_MATRIX_ROWS-1:0]
 ) (
     input  logic   clk_i,
     input  logic   rst_ni,
@@ -53,11 +43,7 @@ module bingo_hw_manager_dep_matrix #(
     // Column set interface
     input  logic              [DEP_MATRIX_COLS-1:0] dep_set_valid_i,
     output logic              [DEP_MATRIX_COLS-1:0] dep_set_ready_o,
-    input  dep_set_code_t     [DEP_MATRIX_COLS-1:0] dep_set_code_i,
-    // JIT-DFG private bind set port — increments counter[bind_set_slot_i][DEP_MATRIX_COLS-1]
-    // when bind_set_valid_i is pulsed. Tie to '0 if JIT-DFG is not used.
-    input  logic                                    bind_set_valid_i,
-    input  logic              [SLOT_ID_W-1:0]       bind_set_slot_i
+    input  dep_set_code_t     [DEP_MATRIX_COLS-1:0] dep_set_code_i
 );
 
     // Counter matrix: counter_q[row][col] counts pending signals
@@ -93,17 +79,6 @@ module bingo_hw_manager_dep_matrix #(
             end
         end
 
-        // JIT-DFG: bind_set increments counter[slot][WAIT_FOR_BIND_COL].
-        // WAIT_FOR_BIND_COL is conventionally the highest column index.
-        // Same-cycle composition with dep_set is safe because the saturating
-        // increment cannot lose signals (cell saturates at 0xFF).
-        if (bind_set_valid_i && (DEP_MATRIX_COLS > DEP_MATRIX_ROWS)
-                && (bind_set_slot_i < DEP_MATRIX_ROWS)) begin
-            if (counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] < {COUNTER_WIDTH{1'b1}}) begin
-                counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] =
-                    counter_d[bind_set_slot_i][DEP_MATRIX_COLS-1] + 1;
-            end
-        end
     end
 
     // Sequential update: apply set increments and check decrements
@@ -164,18 +139,5 @@ module bingo_hw_manager_dep_matrix #(
             end
         end
     end
-
-    // ---- JIT-DFG invariants (sim only) -----------------------------------
-    // The WAIT_FOR_BIND column (highest index) must never be set by the
-    // public dep_set path when JIT mode is active (COLS > ROWS). It is
-    // exclusively driven by bind_set_valid_i.
-    `ifndef SYNTHESIS
-    if (DEP_MATRIX_COLS > DEP_MATRIX_ROWS) begin : gen_jit_sva
-        assert_wait_for_bind_col_not_public_set: assert property (
-            @(posedge clk_i) disable iff (!rst_ni)
-            !dep_set_valid_i[DEP_MATRIX_COLS-1]
-        ) else $error("dep_matrix: public dep_set targeted WAIT_FOR_BIND column %0d", DEP_MATRIX_COLS-1);
-    end
-    `endif
 
 endmodule

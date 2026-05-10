@@ -201,7 +201,12 @@ bingo_hw_manager_top
  |    +-- Chiplet Done Queue (write_mailbox, 1x, RX from peer chiplets)
  |
  +-- Power Manager (1x)
-      +-- bingo_hw_manager_pm (idle-based clock gating)
+ |    +-- bingo_hw_manager_pm (idle-based clock gating)
+ |
+ +-- Per-Cluster Fault Recovery (NUM_CLUSTERS_PER_CHIPLET instances)
+      +-- bingo_hw_manager_fault_recovery
+            (autonomous per-task-timeout FSM; rebinds stuck slot to a
+             same-capability spare core via the scoreboard's reassign port)
 ```
 
 ## Parameters
@@ -222,6 +227,8 @@ bingo_hw_manager_top
 | `ReadyQueueDepth` | 8 | Per-(core,cluster) ready FIFO depth |
 | `TASK_QUEUE_TYPE` | 1 | 0: AXI-Lite slave, 1: AXI-Lite master |
 | `READY_AND_DONE_QUEUE_INTERFACE_TYPE` | 1 | 0: AXI-Lite, 1: CSR req/resp |
+| `CoreCapabilityWidth` | 2 | Bit-width of the per-core capability tag (e.g. GEMM/DMA) used by the fault-recovery FSM to match like-for-like spares |
+| `FaultTimeoutWidth` | 32 | Bit-width of `fault_timeout_threshold_i` |
 
 ## Interface Modes
 
@@ -290,7 +297,22 @@ The HW/SW co-design boundary: HW owns the *primitive* (one CERF register, one co
 
 ### Task-Slot Scoreboard (GPU-style dependency decoupling)
 
-The host writes only `assigned_core_id`; HW synthesizes a logical `slot_id := assigned_core_id` at the AXI decode point, and the dependency matrix is indexed by the synthesized `slot_id`. A per-cluster scoreboard maintains the slot↔core mapping (identity at reset) so a future fault-recovery controller can rebind a slot to a different core without touching any dependency encoding the host already produced — analogous to GPU warp-ID vs SM-ID decoupling. `slot_id` is a HW-internal concept; no SW programmer ever sets it.
+The host writes only `assigned_core_id`; HW synthesizes a logical `slot_id := assigned_core_id` at the AXI decode point, and the dependency matrix is indexed by the synthesized `slot_id`. A per-cluster scoreboard maintains the slot↔core mapping (identity at reset). The forward-view read is consumed at decode to override `assigned_core_id` whenever a slot has been rebound, so reassign actually retargets execution to the new physical core — not just done-info attribution. The slot decoupling is analogous to GPU warp-ID vs SM-ID. `slot_id` is a HW-internal concept; no SW programmer ever sets it.
+
+### Autonomous Fault Recovery
+
+One `bingo_hw_manager_fault_recovery` instance per cluster watches every core's in-flight signal and increments a per-core timer; if a core holds an in-flight task longer than `fault_timeout_threshold_i` without producing a done pulse, it's marked faulty (sticky), and the FSM drives the scoreboard's `reassign_*` port to rebind the logical slot to the lowest-id idle core with the **same capability tag** (from the host-configured `core_capability_i`). If no compatible spare exists, `fault_irq_o[cluster]` pulses for one cycle. The whole feature is gated by `fault_recovery_en_i` (default 0) — when disabled, the FSM stays idle and the system behaves exactly like the legacy build.
+
+Top-level ports:
+
+| Port | Direction | Purpose |
+|------|-----------|---------|
+| `core_capability_i[cluster][core]` | in | Host-configured capability tag (width = `CoreCapabilityWidth`). |
+| `fault_timeout_threshold_i` | in | Cycle threshold for declaring a core faulty. |
+| `fault_recovery_en_i` | in | Master enable for the FSM. |
+| `fault_irq_o[cluster]` | out | Per-cluster pulse: a fault was detected but no compatible spare existed. |
+
+Known limitation: when a core is declared faulty, any task already sitting in its `checkout_queue[core][cluster]` is stranded (it will never produce a done pulse). The current FSM only retargets *future* tasks for the rebound slot. Flushing / re-issuing the stranded task is deferred work.
 
 ## Source Files
 
@@ -307,6 +329,7 @@ The host writes only `assigned_core_id`; HW synthesizes a logical `slot_id := as
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_scoreboard.sv` | Task-slot scoreboard |
+| 1 | `bingo_hw_manager_fault_recovery.sv` | Per-cluster autonomous fault-recovery FSM |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
@@ -317,10 +340,11 @@ The test infrastructure includes:
 - **Structured DFG patterns:** serial chain, parallel fork-join, double buffer, diamond, stacked GEMM, multi-chiplet chain
 - **Random DAG stress tests:** 10–40 tasks, 1–4 chiplets, sparse/dense edge configurations
 - **CERF testbenches:** `tb_bingo_hw_manager_cerf_basic` (skip + propagate dep_set), `tb_bingo_hw_manager_cerf_skip`
+- **Scoreboard unit testbench:** `tb_bingo_hw_manager_scoreboard` exercising the reassign path (identity reset, write, reassign retarget, reassign-vs-we_i priority, inverse-table mirror invariant, repeated-write SVA safety, forward-read coherence)
 - **Cycle-accurate Python model** (`model/`) mirroring the RTL pipeline behavior
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion
 
-Current regression: **4/4 testbenches pass** (top, dep_matrix, 2 CERF).
+Current regression: **5/5 testbenches pass** (top, dep_matrix, scoreboard, 2 CERF).
 
 ```bash
 # Compile and simulate (requires Questa)

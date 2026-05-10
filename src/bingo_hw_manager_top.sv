@@ -38,6 +38,11 @@ module bingo_hw_manager_top #(
     parameter int unsigned ReadyQueueDepth = 8,
     // Address Offsets
     parameter int unsigned ReadyQueueAddrOffset = 4096,
+    // Fault-recovery configuration
+    // Width of the host-configured per-core capability tag (e.g. GEMM / DMA).
+    parameter int unsigned CoreCapabilityWidth = 2,
+    // Width of the timeout threshold register driving the fault-recovery FSM.
+    parameter int unsigned FaultTimeoutWidth = 32,
     // Dependent parameters, DO NOT OVERRIDE!
     parameter type chip_id_t = logic [ChipIdWidth-1:0],
     parameter type host_axi_lite_addr_t = logic [HostAxiLiteAddrWidth-1:0],
@@ -118,7 +123,16 @@ module bingo_hw_manager_top #(
     // CERF (Conditional Execution Register File) interface
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
-    output logic [31:0]                         cerf_state_o
+    output logic [31:0]                         cerf_state_o,
+    // Fault-recovery interface (host-configured)
+    // Per-(cluster, core) capability tag; replacement on reassign must match.
+    input  logic [NUM_CLUSTERS_PER_CHIPLET-1:0][NUM_CORES_PER_CLUSTER-1:0][CoreCapabilityWidth-1:0] core_capability_i,
+    // Cycle count a core may hold an in-flight task before being declared faulty.
+    input  logic [FaultTimeoutWidth-1:0]        fault_timeout_threshold_i,
+    // Master enable for the fault-recovery FSM. When 0, reassign never fires.
+    input  logic                                fault_recovery_en_i,
+    // Per-cluster pulse: a fault was detected but no compatible spare existed.
+    output logic [NUM_CLUSTERS_PER_CHIPLET-1:0] fault_irq_o
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
@@ -158,6 +172,11 @@ module bingo_hw_manager_top #(
     // Logical slot ID — decoupled from physical core_id for dependency tracking.
     // dep_check/dep_set codes reference slot_id; the dispatcher maps slot→core at runtime.
     typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] bingo_hw_manager_slot_id_t;
+
+    // Host-configured per-core capability tag. The fault-recovery FSM uses
+    // this to find a like-for-like spare (e.g. another GEMM core to take
+    // over for a faulty GEMM core).
+    typedef logic [CoreCapabilityWidth-1:0]            bingo_hw_manager_core_capability_t;
 
     // Task info struct (includes conditional execution + slot_id fields)
     typedef struct packed{
@@ -671,15 +690,25 @@ module bingo_hw_manager_top #(
     assign cur_task_desc.task_type = cur_task_desc_host.task_type;
     assign cur_task_desc.assigned_chiplet_id = cur_task_desc_host.assigned_chiplet_id;
     assign cur_task_desc.assigned_cluster_id = cur_task_desc_host.assigned_cluster_id;
-    assign cur_task_desc.assigned_core_id = cur_task_desc_host.assigned_core_id;
     assign cur_task_desc.dep_check_info = cur_task_desc_host.dep_check_info;
     assign cur_task_desc.dep_set_info = cur_task_desc_host.dep_set_info;
     // CERF fields
     assign cur_task_desc.cond_exec_en = cur_task_desc_host.cond_exec_en;
     assign cur_task_desc.cond_exec_group_id = cur_task_desc_host.cond_exec_group_id;
     assign cur_task_desc.cond_exec_invert = cur_task_desc_host.cond_exec_invert;
-    // slot_id is HW-internal — synthesize as assigned_core_id at decode.
+    // slot_id is HW-internal — synthesize as the host-supplied assigned_core_id
+    // (the logical handle the host uses to address a slot).
     assign cur_task_desc.slot_id = cur_task_desc_host.assigned_core_id;
+    // assigned_core_id is the *physical* core to dispatch to. If the scoreboard
+    // for this cluster has rebound slot s to a different core via reassign, the
+    // forward table override takes effect; otherwise it's the identity mapping.
+    bingo_hw_manager_assigned_core_id_t cur_assigned_cluster_fwd_core;
+    logic                               cur_assigned_cluster_fwd_valid;
+    assign cur_assigned_cluster_fwd_core  = scoreboard_read_core[cur_task_desc_host.assigned_cluster_id];
+    assign cur_assigned_cluster_fwd_valid = scoreboard_read_valid[cur_task_desc_host.assigned_cluster_id];
+    assign cur_task_desc.assigned_core_id =
+        cur_assigned_cluster_fwd_valid ? cur_assigned_cluster_fwd_core
+                                       : cur_task_desc_host.assigned_core_id;
 
 
     /////////////////////////////////////////////////////////
@@ -923,24 +952,37 @@ module bingo_hw_manager_top #(
     end
 
     //////////////////////////////////////////////////////////////////////
-    // Task-Slot Scoreboard (one per cluster)
+    // Task-Slot Scoreboard + Fault-Recovery FSM (one pair per cluster)
     //
     // Write trigger: any waiting_dep_check_queue_push[*] whose target cluster
     // matches this scoreboard. All per-core pushes in a cycle share the same
     // `cur_task_desc` (stream_demux_core_type selects exactly one core), so we
     // can pull write_slot / write_core straight from cur_task_desc.
     //
-    // `reassign_*` is currently tied off; a future fault-recovery controller
-    // will drive these ports from a host-visible CSR.
+    // The forward read port is now driven by `cur_task_desc.slot_id` so the
+    // decode block can override `assigned_core_id` with the current slot→core
+    // binding (see the decode block above). Reassign is driven by the
+    // autonomous per-cluster fault-recovery FSM below.
     //////////////////////////////////////////////////////////////////////
+    // FSM outputs per cluster
+    logic                              [NUM_CLUSTERS_PER_CHIPLET-1:0] fr_reassign_valid;
+    bingo_hw_manager_slot_id_t         [NUM_CLUSTERS_PER_CHIPLET-1:0] fr_reassign_slot;
+    bingo_hw_manager_assigned_core_id_t[NUM_CLUSTERS_PER_CHIPLET-1:0] fr_reassign_core;
+
     for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_scoreboard
         assign scoreboard_we[cluster] =
             (|waiting_dep_check_queue_push) &&
             (cur_task_desc.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cluster));
         assign scoreboard_write_slot[cluster] = cur_task_desc.slot_id;
+        // Use the post-override assigned_core_id so subsequent writes for a
+        // reassigned slot don't trip the slot-uniqueness SVA: after reassign,
+        // the override drives assigned_core_id to the rebound core, so the
+        // new write matches the current binding (we re-affirm, not remap).
         assign scoreboard_write_core[cluster] = cur_task_desc.assigned_core_id;
-        // Forward-view + scalar inverse read ports are currently unused — tie off.
-        assign scoreboard_read_slot[cluster]     = '0;
+        // Forward read drives the decode-time override (see decode block above).
+        assign scoreboard_read_slot[cluster]     = cur_task_desc.slot_id;
+        // Scalar inverse read port still unused (the full inverse table drives
+        // both the done-stamping path and the fault-recovery FSM).
         assign scoreboard_inv_read_core[cluster] = '0;
 
         bingo_hw_manager_scoreboard #(
@@ -953,21 +995,52 @@ module bingo_hw_manager_top #(
             .we_i             (scoreboard_we[cluster]           ),
             .write_slot_i     (scoreboard_write_slot[cluster]   ),
             .write_core_i     (scoreboard_write_core[cluster]   ),
-            // Fault-recovery hook — tied off
-            .reassign_valid_i (1'b0                             ),
-            .reassign_slot_i  ('0                               ),
-            .reassign_core_i  ('0                               ),
-            // Forward read (currently unused)
+            // Fault-recovery FSM drives these
+            .reassign_valid_i (fr_reassign_valid[cluster]       ),
+            .reassign_slot_i  (fr_reassign_slot[cluster]        ),
+            .reassign_core_i  (fr_reassign_core[cluster]        ),
+            // Forward read consumed by the decode-time override
             .read_slot_i      (scoreboard_read_slot[cluster]    ),
             .read_core_o      (scoreboard_read_core[cluster]    ),
             .read_valid_o     (scoreboard_read_valid[cluster]   ),
-            // Inverse read (scalar — currently unused, full table drives done path)
+            // Inverse read (scalar — unused; full table drives done + FSM paths)
             .inv_read_core_i  (scoreboard_inv_read_core[cluster]),
             .inv_read_slot_o  (scoreboard_inv_read_slot[cluster]),
             // Full-table debug + full inverse table for done-path stamping
             .table_core_o     (                                 ),
             .table_valid_o    (                                 ),
             .inv_table_o      (scoreboard_inv_table[cluster]    )
+        );
+
+        // Per-cluster in-flight and done signals: a task is "in flight" on
+        // (core, cluster) while its checkout queue is non-empty; a done pulse
+        // is the cycle the per-(core, cluster) done FIFO accepts a write.
+        logic [NUM_CORES_PER_CLUSTER-1:0] fr_core_inflight;
+        logic [NUM_CORES_PER_CLUSTER-1:0] fr_core_done_pulse;
+        for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_fr_core_sigs
+            assign fr_core_inflight[core]   = !checkout_queue_empty[core][cluster];
+            assign fr_core_done_pulse[core] =  done_q_push[core][cluster];
+        end
+
+        bingo_hw_manager_fault_recovery #(
+            .NUM_CORES         (NUM_CORES_PER_CLUSTER             ),
+            .FaultTimeoutWidth (FaultTimeoutWidth                 ),
+            .slot_id_t         (bingo_hw_manager_slot_id_t        ),
+            .core_id_t         (bingo_hw_manager_assigned_core_id_t),
+            .core_capability_t (bingo_hw_manager_core_capability_t)
+        ) i_fault_recovery (
+            .clk_i             (clk_i                          ),
+            .rst_ni            (rst_ni                         ),
+            .en_i              (fault_recovery_en_i            ),
+            .threshold_i       (fault_timeout_threshold_i      ),
+            .core_capability_i (core_capability_i[cluster]     ),
+            .core_inflight_i   (fr_core_inflight               ),
+            .core_done_pulse_i (fr_core_done_pulse             ),
+            .inv_table_i       (scoreboard_inv_table[cluster]  ),
+            .reassign_valid_o  (fr_reassign_valid[cluster]     ),
+            .reassign_slot_o   (fr_reassign_slot[cluster]      ),
+            .reassign_core_o   (fr_reassign_core[cluster]      ),
+            .no_spare_o        (fault_irq_o[cluster]           )
         );
     end
 

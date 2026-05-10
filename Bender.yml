@@ -24,6 +24,7 @@ sources:
   # Level 1
   - src/bingo_hw_manager_cond_exec_controller.sv # CERF (Conditional Execution Register File)
   - src/bingo_hw_manager_scoreboard.sv           # Slot->Core scoreboard (slot-indexed dep_matrix support)
+  - src/bingo_hw_manager_fault_recovery.sv       # Autonomous per-cluster fault-recovery FSM
   - src/bingo_hw_manager_dep_matrix.sv           # Dependency Matrix Module
   - src/bingo_hw_manager_chiplet_dep_set.sv      # Chiplet DependencySetModule (forwards dep_set to remote chiplets)
   - src/bingo_hw_manager_dep_check_manager.sv    # Dependency Check Manager Module
@@ -33,6 +34,7 @@ sources:
   - target: test
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv
+      - test/tb_bingo_hw_manager_scoreboard.sv
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
       - test/tb_bingo_hw_manager_cerf_skip.sv

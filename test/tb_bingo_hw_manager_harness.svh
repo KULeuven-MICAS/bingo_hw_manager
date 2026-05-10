@@ -603,7 +603,13 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         // CERF interface (stimulus files can drive these)
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
-        .cerf_state_o                         ( /* read-back, unused in standalone TB */                     )
+        .cerf_state_o                         ( /* read-back, unused in standalone TB */                     ),
+        // Fault-recovery interface: disabled in the standalone TB (en=0).
+        // The FSM stays idle and reassign never fires.
+        .core_capability_i                    ( '0                                                          ),
+        .fault_timeout_threshold_i            ( '0                                                          ),
+        .fault_recovery_en_i                  ( 1'b0                                                        ),
+        .fault_irq_o                          ( /* unused */                                                )
     );
 end
 

@@ -1,4 +1,5 @@
 # Fanchen Kong <fanchen.kong@kuleuven.be>
+from __future__ import annotations
 
 import random
 from bingo_utils import DiGraphWrapper
@@ -595,31 +596,15 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
 
         # -- Step 3: per gating node — connected-component grouping -----------
         #
-        # CERF group reuse: if all gating nodes are totally ordered
-        # (each is an ancestor of the next), their conditional targets
-        # execute at different times and can safely share group IDs.
-        # The clear-before-set protocol in the gating task ensures that
-        # stale group values from a previous layer are overwritten.
-        node_to_group: dict[BingoNode, int] = {}
-
-        gating_ordered = [
-            n for n in nx.topological_sort(self) if n in gating_to_targets
-        ]
-        reuse_groups = len(gating_ordered) > 1 and all(
-            nx.has_path(self, gating_ordered[i], gating_ordered[i + 1])
-            for i in range(len(gating_ordered) - 1)
-        )
-        pool_start = self._next_cerf_group
-
-        for gating_node in gating_ordered:
-            targets = gating_to_targets[gating_node]
+        # Within one gating node, targets connected by unconditional edges must
+        # share a group (skipping one without the other would starve inputs);
+        # the connected components of the unconditional-edge subgraph are the
+        # minimal such groups (see 05_formal_ir.md Proposition 1).
+        for gating_node in gating_to_targets:
             gating_node.node_type = "gating"
 
-            # Reset group counter to pool start for reuse
-            if reuse_groups:
-                self._next_cerf_group = pool_start
-
-            # Build undirected graph of unconditional edges among targets
+        region_components: dict[BingoNode, list] = {}
+        for gating_node, targets in gating_to_targets.items():
             unc = nx.Graph()
             unc.add_nodes_from(targets)
             for t in targets:
@@ -629,40 +614,147 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 for u, _, d in self.in_edges(t, data=True):
                     if u in targets and not d.get("cond", False):
                         unc.add_edge(u, t)
-
             # Sort components deterministically by lowest node_id so that
             # expert_i always gets the same CERF group across reused layers.
-            components = sorted(
+            region_components[gating_node] = sorted(
                 nx.connected_components(unc),
                 key=lambda c: min(n.node_id for n in c),
             )
 
-            group_ids = []
-            for component in components:
-                gid = self._next_cerf_group
-                self._next_cerf_group += 1
-                if gid >= 32:
-                    hint = ("Sequential gating reuse is active — "
-                            "too many experts per layer."
-                            if reuse_groups else
-                            "Consider reducing experts or making "
-                            "gating nodes sequential for reuse.")
-                    raise ValueError(
-                        f"CERF group overflow: need group {gid} but "
-                        f"max is 15 (WF4 violated). {hint}"
-                    )
-                for node in component:
-                    node.cond_exec_en = True
-                    node.cond_exec_group_id = gid
-                    node.cond_exec_invert = False
-                    node_to_group[node] = gid
-                group_ids.append(gid)
+        # Naive baseline for the compiler ablation (M-G): the group count a
+        # non-reuse-aware allocator would need -- one fresh group per
+        # component, no cross-region sharing at all. Computed BEFORE the
+        # reuse pass below so it reflects the true "no reuse" cost, not a
+        # side effect of the chain-cover bookkeeping.
+        naive_groups_by_chiplet: dict[int, int] = {}
+        for gating_node, components in region_components.items():
+            cid = gating_node.assigned_chiplet_id
+            naive_groups_by_chiplet[cid] = naive_groups_by_chiplet.get(cid, 0) + len(components)
 
-            gating_node.cerf_write_groups = sorted(set(
-                gating_node.cerf_write_groups + group_ids
-            ))
+        # -- Step 4: cross-region CERF-group-pool reuse via minimum chain cover
+        #
+        # Two gating regions can safely reuse the same CERF-group numbering iff
+        # they can never be simultaneously live. Region a "happens-before"
+        # region b iff EVERY target of a has a DFG path to b's gating node —
+        # i.e. a's guarded targets have all resolved (dispatched or CERF-skipped)
+        # before b's gate can fire. This is exactly the same happens-before
+        # argument used for the dep-matrix tag allocator
+        # (bingo_transform_dfg_allocate_dep_tags): a strict partial order over
+        # the gating regions (transitive because each gating node is, by WF5, an
+        # ancestor of all its own targets — chain two such precedences through
+        # that ancestor edge and transitivity of DAG reachability gives the
+        # third; acyclic because a 2-cycle in the order would require a directed
+        # cycle in the DFG). By Dilworth's theorem the minimum number of
+        # CERF-group pools needed equals the size of the largest antichain
+        # (the max number of simultaneously-live regions) — found here via
+        # minimum chain-cover through bipartite matching, the same construction
+        # as the tag allocator. This generalizes the old "all gating nodes form
+        # one global chain, or no reuse at all" rule: independent chains reuse
+        # within themselves even when the whole graph isn't one total order.
+        #
+        # CERF is instantiated ONCE PER CHIPLET (bingo_hw_manager_cond_exec_
+        # controller lives inside bingo_hw_manager_top), so group N on chiplet
+        # 0 and group N on chiplet 1 are different physical registers. The
+        # min-chain-cover -- and the group counter -- must therefore be scoped
+        # PER CHIPLET: two regions on different chiplets never need to be
+        # temporally ordered at all, they simply never contend for the same
+        # register. Pooling them into one global 32-wide counter would waste
+        # budget across chiplet boundaries for no reason.
+        node_to_group: dict[BingoNode, int] = {}
+        topo_pos = {node: i for i, node in enumerate(nx.topological_sort(self))}
+
+        def region_precedes(a: BingoNode, b: BingoNode) -> bool:
+            return all(nx.has_path(self, t, b) for t in gating_to_targets[a])
+
+        gating_by_chiplet: dict[int, list[BingoNode]] = {}
+        for g in gating_to_targets:
+            gating_by_chiplet.setdefault(g.assigned_chiplet_id, []).append(g)
+
+        n_chains = 0
+        actual_groups_by_chiplet: dict[int, int] = {}
+        for chiplet_id, chiplet_gating_nodes in gating_by_chiplet.items():
+            gating_ordered = sorted(chiplet_gating_nodes, key=lambda n: topo_pos[n])
+            n = len(gating_ordered)
+
+            B = nx.Graph()
+            for i in range(n):
+                B.add_node(("L", i)); B.add_node(("R", i))
+            for i in range(n):
+                for j in range(n):
+                    if i != j and region_precedes(gating_ordered[i], gating_ordered[j]):
+                        B.add_edge(("L", i), ("R", j))
+            match = (nx.algorithms.bipartite.hopcroft_karp_matching(
+                         B, top_nodes=[("L", i) for i in range(n)])
+                     if B.number_of_edges() else {})
+            succ, has_pred = {}, set()
+            for node, m in match.items():
+                if node[0] == "L":
+                    succ[node[1]] = m[1]; has_pred.add(m[1])
+
+            next_group = 0  # fresh 32-wide counter for THIS chiplet's CERF
+            for i in range(n):
+                if i in has_pred:
+                    continue  # not a chain head
+                n_chains += 1
+                pool_start = next_group
+                chain_peak = pool_start
+                cur = i
+                while True:
+                    gating_node = gating_ordered[cur]
+                    next_group = pool_start  # reuse: reset to this chain's pool
+                    group_ids = []
+                    for component in region_components[gating_node]:
+                        gid = next_group
+                        next_group += 1
+                        if gid >= 32:
+                            raise ValueError(
+                                f"CERF group overflow on chiplet {chiplet_id}: gating region "
+                                f"'{gating_node.node_name}' needs group {gid} but max is 32 "
+                                f"(WF4 violated). This region's peak concurrent target count "
+                                f"exceeds the 32-group budget on this chiplet even with "
+                                f"cross-region reuse. Reduce this region's fan-out, split it "
+                                f"with a barrier task, or co-locate/serialize with another chain."
+                            )
+                        for node in component:
+                            node.cond_exec_en = True
+                            node.cond_exec_group_id = gid
+                            node.cond_exec_invert = False
+                            node_to_group[node] = gid
+                        group_ids.append(gid)
+                    gating_node.cerf_write_groups = sorted(set(
+                        gating_node.cerf_write_groups + group_ids
+                    ))
+                    chain_peak = max(chain_peak, next_group)
+                    if cur in succ:
+                        cur = succ[cur]
+                    else:
+                        break
+                # Next independent chain (on this chiplet) starts after this
+                # chain's PEAK width, not wherever the last region in the chain
+                # happened to land -- chains can have regions of unequal width,
+                # and the pool must be sized to the widest one actually used.
+                next_group = chain_peak
+            actual_groups_by_chiplet[chiplet_id] = next_group
 
         self._node_to_cerf_group = node_to_group
+        self._n_cerf_chains = n_chains  # exposed for the compiler ablation (M-G)
+        # Compiler ablation (M-G): actual (reuse-aware) vs. naive (no-reuse)
+        # CERF group count, per chiplet and total. The gap between them is the
+        # reuse pass's real, measured saving -- not a theoretical claim.
+        self._cerf_groups_actual = dict(actual_groups_by_chiplet)
+        self._cerf_groups_naive = dict(naive_groups_by_chiplet)
+        # Snapshot gating_node -> its own conditional targets NOW. The later
+        # dummy-set-insertion pass rewires cond=True edges away from a gating
+        # node the moment it has more than one successor (any gating node with
+        # both a conditional target and an unconditional path -- e.g. an MoD
+        # router's residual merge edge): bingo_insert_node_between splices a
+        # dummy in as router -> dummy (uncond) -> block (cond=True, inherited),
+        # so a post-transform re-scan of the graph for cond=True edges would
+        # find the DUMMY as the apparent gating source, not this node. Runtime
+        # activation resolution (e.g. dfg_to_task_descriptors's active_nodes
+        # handling) must key off THIS mapping, not re-derive it from edges
+        # after the transforms have run.
+        self._gating_to_targets = {g: set(t) for g, t in gating_to_targets.items()}
         return node_to_group
 
     def bingo_define_conditional_region(
@@ -707,8 +799,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         else:
             gid = self._next_cerf_group
             self._next_cerf_group += 1
-            if gid >= 16:
-                raise ValueError(f"CERF group overflow: {gid} >= 16 (max 16 groups)")
+            if gid >= 32:
+                raise ValueError(f"CERF group overflow: {gid} >= 32 (max 32 groups)")
             for node in guarded_nodes:
                 node.cond_exec_en = True
                 node.cond_exec_group_id = gid

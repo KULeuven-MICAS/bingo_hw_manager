@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""DARTS Evaluation Suite — generates experimental data for the DATE 2027 paper.
+"""CERF/DARTS Evaluation Suite — the DAC 2027 paper's ablation harness.
+
+(Re-scoped 2026-07-21/22 from an earlier "DATE 2027" framing; the docstring
+below was stale relative to what the script actually does.)
 
 Experiments:
-  1. MoE single-chiplet: static vs DARTS (N=8, k={1,2,4}), two HW configs
+  1. MoE single-chiplet: static vs CERF-gated (N=8, k={1,2,4}), two HW configs
   2. MoE multi-chiplet: 2 chiplets, balanced vs skewed expert activation
   3. Early exit: 4-stage network, exit at different stages
   4. N/k sweep: N={4,8,16}, k={1,2,4,8} on a constrained 3-core config
+  5. Speculative decoding: K={3,5,7} drafts, varying accept count
+  6. Mixture of Depths: 12-layer network, per-layer skip patterns
+  7. Auto-scheduling vs round-robin: Mixtral 4-32L placement comparison
 
 Output:
   - CSV files per experiment in <output_dir>/
@@ -16,7 +22,34 @@ Usage:
   python3 eval_darts.py --moe              # MoE experiments only
   python3 eval_darts.py --early-exit       # Early exit only
   python3 eval_darts.py --sweep            # N/k sweep only
+  python3 eval_darts.py --spec-decode      # Speculative decoding only
+  python3 eval_darts.py --mod              # Mixture of Depths only
+  python3 eval_darts.py --auto-sched       # Auto-scheduling only
   python3 eval_darts.py --output results/  # Custom output directory
+
+KNOWN MODEL LIMITATION (found + root-caused 2026-07-21, not yet fixed):
+A small number of scenarios with a same-core producer -> consumer -> (immediate
+CERF-skip) re-producer chain can report a spurious deadlock that is a Python-
+model timing artifact, not a hardware hazard. Root cause: the tagged dep-matrix
+RTL (bingo_hw_manager_dep_matrix.sv) is explicitly designed on the assumption
+that "a set and a clear in the same cycle target DIFFERENT tag slots... so
+they never conflict" (see its header comment) -- an assumption that holds
+because real FSM + checkout + arbiter-grant latency (each >=1 cycle) keeps a
+chain's consecutive edges from landing in the same cycle. This cycle-accurate
+Python model is *documented* (see dev_docs/hw_scheduler/06_...) as more
+optimistic than RTL by design ("processes in the same cycle as push, while
+RTL has a 1-cycle FSM latency"); in this one corner case that optimism can
+collapse enough latency that a task's own dep-check clear and its own
+immediately-following CERF-skip dep-set land in the identical simulated tick,
+and (matching the RTL's own clear-takes-priority sequential-update logic) the
+clear wins, losing the signal the next consumer in the chain needed. Observed
+triggers: spec_decode K=3/accept=0 (experiment 5) and every round-robin-
+placement row of auto_schedule (experiment 7) -- round-robin's naive core
+cycling produces more same-core immediate chains than the auto placer does.
+Not yet fixed (would mean adding real registered-FIFO latency to the model's
+checkout/arbiter path); RTL-level verification of whether real hardware hits
+this at all has not been performed. Report these cases as a known model
+artifact, not as a hardware deadlock, in anything downstream of this script.
 """
 
 import argparse
@@ -68,14 +101,25 @@ def _bitmask(core_list):
     return mask
 
 
-def compile_dfg(dfg):
-    """Compile DFG: resolve conditional edges, then 4-step transform."""
+def compile_dfg(dfg, dep_tag_width=4):
+    """Compile DFG: resolve conditional edges, then the 5-step transform.
+
+    The tag-allocation pass (bingo_transform_dfg_allocate_dep_tags) must run
+    LAST, after every set/check op is final. Skipping it leaves every edge on
+    the implicit tag=0 default -- which the tagged model correctly mirrors as
+    "tag None coerced to 0" (matching RTL's all-zero tag field being a valid,
+    but SHARED, slot). That's silently unsafe the moment any dep-matrix cell
+    has more than one live edge: it reproduces the exact single-flag collision
+    the tagged design exists to fix, just with no visible tag mismatch to
+    catch it. Always allocate tags for anything beyond a toy single-edge DFG.
+    """
     dfg.bingo_compile_conditional_regions()
     with contextlib.redirect_stdout(io.StringIO()):
         dfg.bingo_transform_dfg_add_dummy_set_nodes()
         dfg.bingo_transform_dfg_add_dummy_check_nodes()
         dfg.bingo_assign_normal_node_dep_check_info()
         dfg.bingo_assign_normal_node_dep_set_info()
+        dfg.bingo_transform_dfg_allocate_dep_tags(dep_tag_width)
 
 
 def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
@@ -85,17 +129,32 @@ def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
     encoding which CERF groups to activate on completion.
 
     Args:
-        active_nodes: Set of BingoNode objects that should execute. The
-                      compiler resolves these to CERF group IDs via
-                      dfg._node_to_cerf_group. If None, all conditional
-                      tasks execute (static mode).
+        active_nodes: Set of BingoNode objects that should execute. If None,
+                      all conditional tasks execute (static mode).
+
+    active_nodes is resolved PER GATING NODE against that node's own
+    conditional targets, NOT via a global group-ID set. Group IDs are reused
+    across independent/sequential gating regions (that's the point of the
+    allocator in bingo_compile_conditional_regions -- see 06); a global
+    "group g is active" set can't distinguish "region A wants group g active"
+    from "region B (which happens to reuse group g) does not". Concretely:
+    a 12-layer Mixture-of-Depths DFG reuses ONE group across all 12
+    sequential routers, so a group-ID-only resolution would have every router
+    write "activate" the moment ANY layer is meant to be active, skipping
+    nothing. Each gating node must instead be asked "of MY OWN targets, which
+    are in active_nodes" -- exactly what the real RTL does too: the gating
+    kernel's write value is derived from that specific dispatch's own data,
+    never from a cross-instance group-identity check.
     """
-    # Resolve active_nodes → active_groups via compiler mapping
     node_to_group = getattr(dfg, "_node_to_cerf_group", {})
-    if active_nodes is not None:
-        active_groups = {node_to_group[n] for n in active_nodes if n in node_to_group}
-    else:
-        active_groups = None
+    # gating_node -> its own conditional targets, snapshotted by
+    # bingo_compile_conditional_regions BEFORE the dummy-node transforms ran.
+    # Do NOT re-derive this by re-scanning dfg.edges(data=True) here: the
+    # dummy-set pass rewires cond=True edges off a gating node the instant it
+    # has more than one successor, so a post-transform scan silently loses
+    # the association for any gating node with an unconditional side-path
+    # (e.g. Mixture-of-Depths' router -> merge residual edge).
+    gating_own_targets = getattr(dfg, "_gating_to_targets", {})
 
     per_chiplet = {}
     work_delays = work_delays or {}
@@ -111,7 +170,14 @@ def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
             # Compute cerf_write_mask and cerf_controlled_mask for gating tasks
             controlled = set(node.cerf_write_groups)
             if controlled:
-                activated = controlled if active_groups is None else (controlled & active_groups)
+                if active_nodes is None:
+                    activated = controlled
+                else:
+                    # THIS node's own targets that are meant to be active,
+                    # resolved via THIS node's own edges -- not a global
+                    # group-ID lookup, which would alias across reuse.
+                    own_active_targets = gating_own_targets.get(node, set()) & active_nodes
+                    activated = {node_to_group[t] for t in own_active_targets if t in node_to_group}
                 cerf_mask = sum(1 << g for g in activated)
                 cerf_ctrl = sum(1 << g for g in controlled)
             else:
@@ -131,6 +197,8 @@ def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
                 dep_set_chiplet_id=node.dep_set_chiplet_id,
                 dep_set_cluster_id=node.dep_set_cluster_id,
                 dep_set_code=_bitmask(node.dep_set_list),
+                dep_check_tag=node.dep_check_tag,
+                dep_set_tag=node.dep_set_tag,
                 cond_exec_en=node.cond_exec_en,
                 cond_exec_group_id=node.cond_exec_group_id,
                 cond_exec_invert=node.cond_exec_invert,
@@ -816,6 +884,135 @@ def experiment_mod(output_dir, verbose=True):
 
 
 # ════════════════════════════════════════════════════════════
+#  Experiment 8 — CERF Group Allocator Ablation (M-G)
+# ════════════════════════════════════════════════════════════
+
+
+def experiment_cerf_allocator_ablation(output_dir, verbose=True):
+    """Compiler ablation: for each target workload, how many CERF groups does
+    the reuse-aware (min-chain-cover) allocator actually use, versus a naive
+    allocator that never reuses group numbering across gating regions?
+
+    This is the measured version of the claim in 06_deadlock_fix_counter_dep_
+    matrix.md / paper_strategy.md Upgrade 4: cross-region reuse is not a
+    theoretical nicety, it materially changes how much of the 32-group budget
+    a workload consumes. The gap is read directly off
+    BingoDFG._cerf_groups_actual / ._cerf_groups_naive (set by
+    bingo_compile_conditional_regions), not estimated.
+
+    One parameter choice to flag: spec_decode's K=3/accept=0 corner case
+    triggers the known model-timing artifact documented at the top of this
+    file (same-tick clear/set collision), so this ablation uses K=5,
+    accept=2 for the speculative-decoding row instead of that corner case --
+    the ablation is about the COMPILER's group usage, which is identical
+    regardless of which specific accept count is simulated (activation
+    pattern doesn't change how many groups the DFG's structure needs), so
+    picking a non-pathological accept count doesn't bias the group-count
+    numbers, only avoids re-triggering the known deadlock artifact.
+    """
+    def _sim_config(n_clusters=1):
+        return SimConfig(
+            num_chiplets=1, num_clusters_per_chiplet=n_clusters, num_cores_per_cluster=3,
+            work_delay_range=(DEFAULT_DELAY, DEFAULT_DELAY), random_seed=42,
+        )
+    rows = []
+
+    def _row(label, dfg, active, work_delays, static_active=None, n_clusters=1):
+        compile_dfg(dfg)
+        naive_total = sum(dfg._cerf_groups_naive.values())
+        actual_total = sum(dfg._cerf_groups_actual.values())
+        sim_config = _sim_config(n_clusters)
+        static = run_sim(dfg, sim_config, static_active, work_delays, label=f"{label}_static")
+        lowered = run_sim(dfg, sim_config, active, work_delays, label=f"{label}_lowered")
+        speedup = static.latency / max(lowered.latency, 1)
+        rows.append({
+            "workload": label,
+            "cerf_chains": dfg._n_cerf_chains,
+            "groups_naive": naive_total,
+            "groups_actual": actual_total,
+            "reuse_factor": f"{naive_total / max(actual_total, 1):.2f}",
+            "static_latency": static.latency,
+            "lowered_latency": lowered.latency,
+            "speedup": f"{speedup:.2f}",
+            "tasks_skipped": lowered.tasks_skipped,
+            "deadlock": static.deadlock or lowered.deadlock,
+        })
+        if verbose:
+            print(f"  {label:24s} chains={dfg._n_cerf_chains:2d}  "
+                  f"groups: naive={naive_total:3d} actual={actual_total:3d} "
+                  f"(reuse {naive_total/max(actual_total,1):.2f}x)  "
+                  f"speedup={speedup:.2f}x  "
+                  f"{'DEADLOCK!' if (static.deadlock or lowered.deadlock) else 'OK'}")
+
+    # MoE, single layer, N=8 top-2 -- one region, no cross-region reuse to find.
+    # Reuses the proven make_moe_dfg generator (explicit round-robin core
+    # placement, matching experiment_moe_single_chiplet's known-good config)
+    # rather than bingo_auto_assign, which packs many nodes onto few cores
+    # and can trigger the same-tick model artifact documented at the top of
+    # this file. n_clusters=2 matches experiment 1's "rich" 2cl_6co config.
+    dfg1, experts1, wd1 = make_moe_dfg(n_experts=8, n_chiplets=1, n_clusters=2, n_cores=3)
+    _row("moe_1layer_N8k2", dfg1, set(experts1[:2]), wd1, static_active=None, n_clusters=2)
+
+    # MoE, 3 sequential layers, N=8 each -- THE reuse case (one chain, 3
+    # regions). Built the same explicit-placement way as make_moe_dfg, not
+    # via bingo_auto_assign, for the same reason as above.
+    dfg2 = BingoDFG()
+    wd2 = {}
+
+    def _moe_layer(dfg, input_node, n_experts, layer_name, n_clusters=2, n_cores=3):
+        router = BingoNode(0, 0, min(1, n_cores - 1), f"{layer_name}_router")
+        dfg.bingo_add_node(router)
+        dfg.bingo_add_edge(input_node, router)
+        wd2[router.node_name] = ROUTER_DELAY
+        experts = []
+        for i in range(n_experts):
+            rem = i
+            cl = (rem // n_cores) % n_clusters
+            co = rem % n_cores
+            exp = BingoNode(0, cl, co, f"{layer_name}_expert_{i}")
+            dfg.bingo_add_node(exp)
+            dfg.bingo_add_edge(router, exp, cond=True)
+            wd2[exp.node_name] = EXPERT_DELAY
+            experts.append(exp)
+        agg = BingoNode(0, 0, min(2, n_cores - 1), f"{layer_name}_agg")
+        dfg.bingo_add_node(agg)
+        wd2[agg.node_name] = AGGREGATOR_DELAY
+        for exp in experts:
+            dfg.bingo_add_edge(exp, agg)
+        return router, experts, agg
+
+    inp2 = BingoNode(0, 0, 0, "input"); dfg2.bingo_add_node(inp2)
+    wd2["input"] = INPUT_DELAY
+    _, e1, agg1 = _moe_layer(dfg2, inp2, 8, "l1")
+    _, e2, agg2 = _moe_layer(dfg2, agg1, 8, "l2")
+    _, e3, agg3 = _moe_layer(dfg2, agg2, 8, "l3")
+    active2 = set(e1[:2]) | set(e2[:2]) | set(e3[:2])
+    _row("moe_3layer_seq_N8k2", dfg2, active2, wd2, static_active=None, n_clusters=2)
+
+    # Early exit, 4 stages -- sequential gating chain (existing generator).
+    # make_early_exit_dfg returns (stage, classifier) pairs; "exit after
+    # stage 2" activates both nodes of stages 1 and 2.
+    dfg3, pairs3, wd3 = make_early_exit_dfg(n_stages=4, n_cores=3)
+    active3 = set()
+    for s in (1, 2):
+        active3.add(pairs3[s][0]); active3.add(pairs3[s][1])
+    _row("early_exit_4stage", dfg3, active3, wd3, static_active=None)
+
+    # Mixture of Depths, 12 layers -- longest sequential reuse chain
+    dfg4, blocks4, wd4 = make_mod_dfg(n_layers=12, n_cores=3)
+    active4 = set(b for i, b in enumerate(blocks4) if i % 4 != 0)  # 25% skip
+    _row("mod_12layer", dfg4, active4, wd4, static_active=None)
+
+    # Speculative decoding, K=5 (avoids the K=3/accept=0 model artifact)
+    dfg5, accepts5, wd5 = make_spec_decode_dfg(n_draft=5, n_cores=3)
+    active5 = set(accepts5[:2])  # accept=2
+    _row("spec_decode_K5", dfg5, active5, wd5, static_active=None)
+
+    _save_csv(os.path.join(output_dir, "cerf_alloc_ablation.csv"), rows)
+    return rows
+
+
+# ════════════════════════════════════════════════════════════
 #  Experiment 7 — Auto-Scheduling vs Round-Robin
 # ════════════════════════════════════════════════════════════
 
@@ -925,12 +1122,14 @@ def main():
     parser.add_argument("--spec-decode", action="store_true", help="Speculative decoding only")
     parser.add_argument("--mod", action="store_true", help="Mixture of Depths only")
     parser.add_argument("--auto-sched", action="store_true", help="Auto-scheduling comparison only")
+    parser.add_argument("--cerf-ablation", action="store_true", help="CERF group allocator ablation only (M-G)")
     parser.add_argument("--output", default=None, help="Output directory")
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args()
 
     run_all = not (args.moe or args.early_exit or args.sweep
-                   or args.spec_decode or args.mod or args.auto_sched)
+                   or args.spec_decode or args.mod or args.auto_sched
+                   or args.cerf_ablation)
     verbose = not args.quiet
     output_dir = args.output or os.path.join(_root, "eval_results")
     os.makedirs(output_dir, exist_ok=True)
@@ -1021,6 +1220,19 @@ def main():
         _print_table(
             "Auto-Scheduling Results", rows,
             ["layers", "placement", "static_latency", "darts_latency",
+             "speedup", "tasks_skipped", "deadlock"],
+        )
+
+    # ── Experiment 8: CERF group allocator ablation (M-G) ──
+    if run_all or args.cerf_ablation:
+        print(f"\n{'─' * 78}")
+        print("  Experiment 8: CERF Group Allocator Ablation  (naive vs reuse-aware)")
+        print(f"{'─' * 78}")
+        rows = experiment_cerf_allocator_ablation(output_dir, verbose)
+        _print_table(
+            "CERF Group Allocator Ablation", rows,
+            ["workload", "cerf_chains", "groups_naive", "groups_actual",
+             "reuse_factor", "static_latency", "lowered_latency",
              "speedup", "tasks_skipped", "deadlock"],
         )
 

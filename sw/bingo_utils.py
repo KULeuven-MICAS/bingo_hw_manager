@@ -1,5 +1,6 @@
 # Fanchen Kong <fanchen.kong@kuleuven.be>
 # Took from zigzag util
+from __future__ import annotations
 from typing import Any, Generic, Iterator, Literal, Sequence, TypeVar, no_type_check, overload
 import networkx as nx
 from networkx import DiGraph

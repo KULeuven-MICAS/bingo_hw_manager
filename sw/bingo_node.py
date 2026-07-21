@@ -1,5 +1,6 @@
 # Fanchen Kong <fanchen.kong@kuleuven.be>
 # The node types and the base class for nodes in the DFG
+from __future__ import annotations
 from abc import ABCMeta
 from typing import Literal
 

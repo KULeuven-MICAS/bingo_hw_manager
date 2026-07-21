@@ -23,5 +23,8 @@ eval_results/
 __pycache__/
 *.pyc
 
+# Local virtual environment
+.venv/
+
 # Documentation (tracked in dev branch only)
 dev_doc/

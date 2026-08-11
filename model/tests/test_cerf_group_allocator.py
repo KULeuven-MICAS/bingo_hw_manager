@@ -18,12 +18,13 @@ global chain, or no reuse at all" rule could not:
 3. The chain count matches a hand-computed minimum (Dilworth: min chains ==
    max antichain) on a scenario built so the antichain size is known.
 
-Run: PYTHONPATH=sw:. python3 -m pytest model/tests/test_cerf_group_allocator.py -q
+Run: python3 -m pytest model/tests/test_cerf_group_allocator.py -q
 """
 import os
 import sys
 
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# repo root is TWO levels up from model/tests/ (this file's dir -> model -> root)
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_root, "sw"))
 sys.path.insert(0, _root)
 

@@ -12,6 +12,9 @@ module bingo_hw_manager_chiplet_dep_set #(
     parameter type host_axi_lite_req_t                = logic,
     parameter type host_axi_lite_resp_t               = logic,
     parameter type bingo_hw_manager_task_desc_full_t  = logic,
+    /// The narrow, single-beat cross-chiplet dep-set message. See its definition in
+    /// bingo_hw_manager_top for why the full descriptor must NOT go on this wire.
+    parameter type bingo_hw_manager_chiplet_msg_t     = logic,
     // Dependent parameters, DO NOT OVERRIDE!
     parameter type host_axi_lite_addr_t = logic [HostAxiLiteAddrWidth-1:0],
     parameter type host_axi_lite_data_t = logic [HostAxiLiteDataWidth-1:0],
@@ -42,6 +45,18 @@ module bingo_hw_manager_chiplet_dep_set #(
     } chiplet_dep_set_fsm_t;
 
     chiplet_dep_set_fsm_t cur_state, next_state;
+    // Project the outgoing descriptor down to the four fields the remote dep-matrix set actually
+    // consumes, plus the task id for tracing.
+    bingo_hw_manager_chiplet_msg_t chiplet_msg;
+    always_comb begin : compose_chiplet_msg
+        chiplet_msg                    = '0;
+        chiplet_msg.dep_set_cluster_id = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_cluster_id;
+        chiplet_msg.src_core_id        = chiplet_dep_set_task_desc_i.assigned_core_id;
+        chiplet_msg.dep_set_code       = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_code;
+        chiplet_msg.dep_set_tag        = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_tag;
+        chiplet_msg.task_id            = chiplet_dep_set_task_desc_i.task_id;
+    end
+
     // State Update
     always_ff @(posedge clk_i, negedge rst_ni) begin
         if (!rst_ni) begin
@@ -109,10 +124,16 @@ module bingo_hw_manager_chiplet_dep_set #(
                 to_remote_chiplet_axi_lite_req_o.w_valid = 1'b0;
             end
             chiplet_dep_set_SEND_W: begin
-                // In the send w, it will always send the task id as data
+                // Send the NARROW message, not the descriptor.
+                //
+                // The receiving mailbox adapter commits one FIFO entry per W beat and has no
+                // reassembly and no per-sender state, so a message that does not fit in one beat
+                // can be torn by a concurrent sender to the same mailbox. Packing only the fields
+                // the far side consumes keeps this a single beat, and the elaboration check on
+                // ChipletMsgWidth keeps it that way as the descriptor grows.
                 chiplet_dep_set_task_desc_ready_o = 1'b0;
                 to_remote_chiplet_axi_lite_req_o.w_valid = 1'b1;
-                to_remote_chiplet_axi_lite_req_o.w.data = chiplet_dep_set_task_desc_i;
+                to_remote_chiplet_axi_lite_req_o.w.data = chiplet_msg;
                 to_remote_chiplet_axi_lite_req_o.w.strb = '1;
                 to_remote_chiplet_axi_lite_req_o.aw = '0;
                 to_remote_chiplet_axi_lite_req_o.aw_valid = 1'b0;

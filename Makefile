@@ -3,13 +3,28 @@
 # - Yunhao Deng <yunhao.deng@kuleuven.be>
 # The batch testing is done by the make all
 # The single testing with gui is done by make sim_gui
+# bash, so `set -o pipefail` below actually takes effect (/bin/sh may not support it).
+SHELL         := /bin/bash
 VSIM          ?= vsim
 BENDER        ?= bender
 TB_DIR        ?= tb
 TEST_DIR      ?= test
 VSIM_BUILDDIR ?= work-vsim
 TB            ?= bingo_hw_manager_top
-TBS           ?= bingo_hw_manager_top
+# Every testbench in test/. This used to list only `bingo_hw_manager_top`, so `make all` /
+# `make sim_all` silently exercised ONE of them and a green run meant almost nothing.
+TBS           ?= bingo_hw_manager_top \
+                 bingo_hw_manager_tagged \
+                 bingo_hw_manager_tagged_mc \
+                 bingo_hw_manager_dep_matrix \
+                 bingo_hw_manager_cerf_basic \
+                 bingo_hw_manager_cerf_skip \
+                 bingo_hw_manager_task_fetch
+
+# Source files the compiled library depends on. Without these, compile.log depends only on
+# Bender.yml, so editing any .sv leaves a STALE compiled library in place and every subsequent
+# `make sim-*.log` silently re-runs the previous build -- a test edit appears to change nothing.
+RTL_SRCS      := $(wildcard src/*.sv) $(wildcard test/*.sv) $(wildcard test/*.svh)
 
 SIM_TARGETS := $(addsuffix .log,$(addprefix sim-,$(TBS)))
 
@@ -32,12 +47,12 @@ sim_all: $(SIM_TARGETS)
 
 build:
 	mkdir -p $@
-compile.log: Bender.yml | build
-	export VSIM="$(VSIM)"; cd build && ../scripts/compile_vsim.sh | tee ../$@
+compile.log: Bender.yml $(RTL_SRCS) | build
+	set -o pipefail; export VSIM="$(VSIM)"; cd build && ../scripts/compile_vsim.sh | tee ../$@
 	(! grep -n "Error:" $@)
 
 sim-%.log: compile.log
-	export VSIM="$(VSIM)"; cd build && ../scripts/run_vsim.sh --random-seed $* | tee ../$@
+	set -o pipefail; export VSIM="$(VSIM)"; cd build && ../scripts/run_vsim.sh --random-seed $* | tee ../$@
 	(! grep -n "Error:" $@)
 	(! grep -n "Fatal:" $@)
 

@@ -501,6 +501,11 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .DepTagWidth                         ( DEP_TAG_WIDTH                       ),
         .HostAxiLiteAddrWidth                ( HOST_AW                             ),
         .HostAxiLiteDataWidth                ( HOST_DW                             ),
+        // These TBs drive the AXI-Lite SLAVE task queue (TASK_QUEUE_TYPE==0), which commits one
+        // descriptor per W beat and therefore requires the single-beat (degenerate) descriptor
+        // container. The multi-beat descriptor is covered by tb_bingo_hw_manager_task_fetch,
+        // which drives the MASTER path that HeMAiA actually uses.
+        .TaskDescBusWidth                    ( HOST_DW                             ),
         .DeviceAxiLiteAddrWidth              ( DEV_AW                              ),
         .DeviceAxiLiteDataWidth              ( DEV_DW                              ),
         .host_axi_lite_req_t                 ( host_req_t                          ),

@@ -23,6 +23,20 @@ module bingo_hw_manager_top #(
     // per-edge tags are plumbed to the tagged dep-matrix scoreboard so a
     // consumer drains only ITS producer's increment (no counter-sharing hazard).
     parameter int unsigned DepTagWidth = 4,
+    /// Width of the task-descriptor CONTAINER, in bits.
+    ///
+    /// This used to be implicit: the descriptor was whatever fitted in one HostAxiLiteDataWidth
+    /// beat, so "how wide is a descriptor" and "how wide is the host bus" were the same number and
+    /// the design could not tell them apart. They are different questions. The host narrow fabric
+    /// is fixed at 64 bit by the SoC; the descriptor has to grow with the core and cluster counts
+    /// (each extra core costs 2 bits, because dep_check_code and dep_set_code are both per-core
+    /// masks). At 4 clusters x 4 cores + host the descriptor is already 65 bits.
+    ///
+    /// MUST be an integer multiple of HostAxiLiteDataWidth: the task list is fetched as that many
+    /// AXI-Lite beats per descriptor (see bingo_hw_manager_task_queue_master, which makes the
+    /// multi-beat fetch atomic). Software MUST use the same value -- it is published to the C and
+    /// Python sides as BINGO_TASK_DESC_WIDTH so the emitted task list has the same stride.
+    parameter int unsigned TaskDescBusWidth = 128,
     // AXI interface types
     // The task queue holds tasks to be scheduled to the devices
     // Host writes the task queue via 64bit AXI Lite
@@ -184,14 +198,34 @@ module bingo_hw_manager_top #(
     } bingo_hw_manager_task_desc_t;
 
     localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
-    localparam int unsigned ReservedBitsForTaskDesc = HostAxiLiteDataWidth - TaskDescWidth;
-    if (TaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
+    localparam int unsigned ReservedBitsForTaskDesc = TaskDescBusWidth - TaskDescWidth;
+    /// How many host AXI-Lite beats one descriptor occupies. 1 reproduces the historical
+    /// single-beat behaviour exactly.
+    localparam int unsigned TaskDescBeats = TaskDescBusWidth / HostAxiLiteDataWidth;
+    if (TaskDescWidth>TaskDescBusWidth) begin : gen_task_desc_width_check
         initial begin
-        $error("Task Decriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HostAxiLiteDataWidth);
+        $error("Task Descriptor width (%0d) exceeds TaskDescBusWidth (%0d)! Raise TaskDescBusWidth (and BINGO_TASK_DESC_WIDTH on the SW side) or shrink a field.", TaskDescWidth, TaskDescBusWidth);
         $finish;
         end
     end
-    // 64bit Task Descriptor with reserved bits
+    if (TaskDescBusWidth % HostAxiLiteDataWidth != 0) begin : gen_task_desc_beat_check
+        initial begin
+        $error("TaskDescBusWidth (%0d) must be an integer multiple of HostAxiLiteDataWidth (%0d).", TaskDescBusWidth, HostAxiLiteDataWidth);
+        $finish;
+        end
+    end
+    // TASK_QUEUE_TYPE==0 is the AXI-Lite SLAVE task queue: the host pushes descriptors into a
+    // write mailbox that commits one entry per W beat. It has no reassembly, so it can only carry
+    // a single-beat descriptor. Only the MASTER path (TYPE==1, what HeMAiA uses) implements the
+    // multi-beat atomic fetch. Fail loudly here rather than silently zero-extending a truncated
+    // descriptor, which is what the unguarded width assignment would otherwise do.
+    if ((TASK_QUEUE_TYPE == 0) && (TaskDescBusWidth != HostAxiLiteDataWidth)) begin : gen_task_desc_slave_width_check
+        initial begin
+        $error("TASK_QUEUE_TYPE==0 (AXI-Lite slave task queue) supports only a single-beat descriptor, but TaskDescBusWidth=%0d and HostAxiLiteDataWidth=%0d. Use TASK_QUEUE_TYPE==1 for a multi-beat descriptor.", TaskDescBusWidth, HostAxiLiteDataWidth);
+        $finish;
+        end
+    end
+    // Task Descriptor padded out to the container width
     typedef struct packed{
         logic [ReservedBitsForTaskDesc-1:0]          reserved_bits;
         bingo_hw_manager_dep_set_info_t              dep_set_info;
@@ -206,6 +240,45 @@ module bingo_hw_manager_top #(
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_full_t;
+
+    /// CROSS-CHIPLET DEP-SET MESSAGE.
+    ///
+    /// This is deliberately NOT the task descriptor. The sender used to put the whole descriptor
+    /// on the wire simply because it happened to fit in one AXI-Lite beat, which made the
+    /// atomicity of a cross-chiplet dep-set an accident of its width rather than a property of
+    /// the protocol. Many chiplets write one destination mailbox concurrently and the receiving
+    /// adapter pushes one FIFO entry per W beat with no reassembly, so the moment a message needs
+    /// two beats two senders can interleave and the receiver commits a torn message -- silently,
+    /// because every bit pattern is a legal descriptor.
+    ///
+    /// So the message carries only what the RECEIVER actually consumes (see the dep-matrix set
+    /// composition below): the four fields it reads, plus the originating task id for tracing.
+    /// It is checked at elaboration to fit in a single beat, which is what keeps it atomic no
+    /// matter how wide the descriptor grows.
+    typedef struct packed{
+        bingo_hw_manager_task_id_t                 task_id;             // trace only, not consumed
+        bingo_hw_manager_dep_tag_t                 dep_set_tag;
+        bingo_hw_manager_dep_code_t                dep_set_code;
+        bingo_hw_manager_assigned_core_id_t        src_core_id;         // dep_matrix column
+        bingo_hw_manager_assigned_cluster_id_t     dep_set_cluster_id;  // dep_matrix id
+    } bingo_hw_manager_chiplet_msg_t;
+
+    localparam int unsigned ChipletMsgWidth = $bits(bingo_hw_manager_chiplet_msg_t);
+    localparam int unsigned ReservedBitsForChipletMsg = HostAxiLiteDataWidth - ChipletMsgWidth;
+    if (ChipletMsgWidth > HostAxiLiteDataWidth) begin : gen_chiplet_msg_width_check
+        initial begin
+        $error("Cross-chiplet dep-set message (%0d b) exceeds one AXI-Lite beat (%0d b). It MUST fit in one beat or it is no longer atomic against concurrent senders.", ChipletMsgWidth, HostAxiLiteDataWidth);
+        $finish;
+        end
+    end
+    typedef struct packed{
+        logic [ReservedBitsForChipletMsg-1:0]      reserved_bits;
+        bingo_hw_manager_task_id_t                 task_id;
+        bingo_hw_manager_dep_tag_t                 dep_set_tag;
+        bingo_hw_manager_dep_code_t                dep_set_code;
+        bingo_hw_manager_assigned_core_id_t        src_core_id;
+        bingo_hw_manager_assigned_cluster_id_t     dep_set_cluster_id;
+    } bingo_hw_manager_chiplet_msg_full_t;
 
     // Done info struct
     typedef struct packed{
@@ -263,7 +336,10 @@ module bingo_hw_manager_top #(
     // The task queue holds the tasks to be scheduled to the devices
     bingo_hw_manager_task_desc_full_t  cur_task_desc_full;
     bingo_hw_manager_task_desc_t       cur_task_desc;
-    logic [HostAxiLiteDataWidth-1:0]   task_queue_mbox_data;
+    // Descriptor-wide, NOT bus-wide. These two were the same number until the descriptor
+    // outgrew one AXI-Lite beat; declaring a descriptor carrier with the bus width is exactly
+    // the kind of silent coupling that made the old design impossible to widen.
+    logic [TaskDescBusWidth-1:0]       task_queue_mbox_data;
     logic                              task_queue_mbox_empty;
     logic                              task_queue_mbox_pop;
 
@@ -295,7 +371,7 @@ module bingo_hw_manager_top #(
     logic [HostAxiLiteDataWidth-1:0]   chiplet_done_queue_mbox_data;
     logic                              chiplet_done_queue_mbox_empty;
     logic                              chiplet_done_queue_mbox_pop;
-    bingo_hw_manager_task_desc_full_t  cur_chiplet_done_queue_task_desc;
+    bingo_hw_manager_chiplet_msg_full_t cur_chiplet_done_queue_msg;
     /////////////////////////////////////////////////////////
     // Stream demux core type
     /////////////////////////////////////////////////////////
@@ -533,7 +609,10 @@ module bingo_hw_manager_top #(
             .req_lite_t                   (host_axi_lite_req_t          ),
             .resp_lite_t                  (host_axi_lite_resp_t         ),
             .addr_t                       (host_axi_lite_addr_t         ),
-            .data_t                       (host_axi_lite_data_t         )
+            // data_t = one AXI-Lite beat; desc_t = one whole descriptor. The master fetches
+            // TaskDescBeats beats and commits them to its FIFO as a single atomic push.
+            .data_t                       (host_axi_lite_data_t         ),
+            .desc_t                       (logic [TaskDescBusWidth-1:0] )
         ) i_bingo_hw_manager_task_queue_master (
             .clk_i                     (clk_i                                ),
             .rst_ni                    (rst_ni                               ),
@@ -554,8 +633,8 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Task queue → demux (direct connection, no mux needed)
     //////////////////////////////////////////////////////////////////////
-    host_axi_lite_data_t muxed_task_data;
-    logic                muxed_task_valid;
+    logic [TaskDescBusWidth-1:0] muxed_task_data;
+    logic                        muxed_task_valid;
 
     assign muxed_task_data  = task_queue_mbox_data;
     assign muxed_task_valid = !task_queue_mbox_empty;
@@ -580,6 +659,7 @@ module bingo_hw_manager_top #(
     // H2H Dep Set Interface
     /////////////////////////////////////////////////////////       
     bingo_hw_manager_chiplet_dep_set #(
+        .bingo_hw_manager_chiplet_msg_t   (bingo_hw_manager_chiplet_msg_full_t),
         .ChipIdWidth                                  (ChipIdWidth            ),
         .HostAxiLiteAddrWidth                         (HostAxiLiteAddrWidth   ),
         .HostAxiLiteDataWidth                         (HostAxiLiteDataWidth   ),
@@ -659,7 +739,7 @@ module bingo_hw_manager_top #(
         .mbox_empty_o(chiplet_done_queue_mbox_empty     ),
         .mbox_flush_i('0                                )
     );
-    assign cur_chiplet_done_queue_task_desc = bingo_hw_manager_task_desc_full_t'(chiplet_done_queue_mbox_data);
+    assign cur_chiplet_done_queue_msg = bingo_hw_manager_chiplet_msg_full_t'(chiplet_done_queue_mbox_data);
     assign chiplet_done_queue_mbox_pop =  stream_arbiter_dep_matrix_set_inp_ready[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET] && !chiplet_done_queue_mbox_empty;
     //////////////////////////////////////////////////////////////////////
     // Stream demux core type
@@ -830,10 +910,10 @@ module bingo_hw_manager_top #(
             end
         end
         // For Chiplet Set Queue
-        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_id  = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_cluster_id;
-        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_col = cur_chiplet_done_queue_task_desc.assigned_core_id;
-        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_set_tag = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_tag;
-        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_set_code   = cur_chiplet_done_queue_task_desc.dep_set_info.dep_set_code;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_id  = cur_chiplet_done_queue_msg.dep_set_cluster_id;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_col = cur_chiplet_done_queue_msg.src_core_id;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_matrix_set_tag = cur_chiplet_done_queue_msg.dep_set_tag;
+        stream_arbiter_dep_matrix_set_inp_data[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET].dep_set_code   = cur_chiplet_done_queue_msg.dep_set_code;
         stream_arbiter_dep_matrix_set_inp_valid[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET] = !chiplet_done_queue_mbox_empty;
         stream_arbiter_dep_matrix_set_oup_ready = stream_demux_set_dep_matrix_cluster_id_inp_ready;
     end 

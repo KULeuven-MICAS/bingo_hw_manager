@@ -40,6 +40,7 @@ sources:
       - test
     files:
       - test/tb_bingo_hw_manager_dep_matrix.sv
+      - test/tb_bingo_hw_manager_task_fetch.sv  # multi-beat atomic descriptor fetch (TASK_QUEUE_TYPE==1)
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
       - test/tb_bingo_hw_manager_cerf_skip.sv

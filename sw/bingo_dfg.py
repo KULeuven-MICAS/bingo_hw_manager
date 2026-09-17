@@ -3,7 +3,16 @@ from __future__ import annotations
 
 import random
 from bingo_utils import DiGraphWrapper
-from bingo_node import BingoNode
+from bingo_node import (
+    BingoNode,
+    BINGO_DEP_TAG_WIDTH,
+    BINGO_NUM_CLUSTERS_PER_CHIPLET,
+    BINGO_NUM_CORES_PER_CLUSTER,
+    BINGO_TASK_DESC_WIDTH,
+    BINGO_TASK_DESC_WORD_WIDTH,
+    BINGO_TASK_ID_WIDTH,
+    bingo_task_desc_fields,
+)
 import networkx as nx
 MAX_NUM_CHIPLETS = 8
 # The device DMA core: iDMA load/store + every xDMA convert/reshuffle/reduce is HW-bound
@@ -14,10 +23,24 @@ DMA_CORE = 1
 class BingoDFG(DiGraphWrapper[BingoNode]):
     """Data Flow Graph (DFG) for Bingo."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        num_clusters_per_chiplet: int = BINGO_NUM_CLUSTERS_PER_CHIPLET,
+        num_cores_per_cluster: int = BINGO_NUM_CORES_PER_CLUSTER,
+        dep_tag_width: int = BINGO_DEP_TAG_WIDTH,
+        task_desc_width: int = BINGO_TASK_DESC_WIDTH,
+    ) -> None:
         super().__init__()
         self.id = 0
         self._next_cerf_group = 0
+        # Chiplet geometry and descriptor container width. These three decide
+        # every variable-width field in the descriptor, so they must match the
+        # parameters the DUT is elaborated with (NUM_CLUSTERS_PER_CHIPLET,
+        # NUM_CORES_PER_CLUSTER, DepTagWidth, TaskDescBusWidth).
+        self.num_clusters_per_chiplet = num_clusters_per_chiplet
+        self.num_cores_per_cluster = num_cores_per_cluster
+        self.dep_tag_width = dep_tag_width
+        self.task_desc_width = task_desc_width
     def bingo_add_node(self, node_obj: BingoNode) -> None:
         """Add a node to the DFG."""
 
@@ -336,7 +359,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     cur_node.dep_set_cluster_id = 0
                     cur_node.dep_set_chiplet_id = 0
 
-    def bingo_transform_dfg_allocate_dep_tags(self, tag_width: int = 3) -> None:
+    def bingo_transform_dfg_allocate_dep_tags(self, tag_width: int | None = None) -> None:
         """Assign per-edge identity tags so a consumer drains only ITS
         producer's set, never a stray that happens to share the same
         dep-matrix cell.
@@ -362,6 +385,11 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         must reduce a cell's concurrency (co-locate / serialize the offending
         producers in placement) or ``DepTagWidth`` must be widened.
         """
+        # Default to the DFG's configured DepTagWidth rather than a literal: the
+        # descriptor reserves exactly that many bits per tag, so a hardcoded
+        # default here is a second, silently disagreeing source of truth.
+        if tag_width is None:
+            tag_width = self.dep_tag_width
         max_tags = 1 << tag_width
         topo = list(nx.topological_sort(self))
         pos = {n: i for i, n in enumerate(topo)}
@@ -1138,14 +1166,152 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         plt.savefig(filename)
         plt.show()
         
+    # ----------------------------------------------------------------
+    # Task descriptor packing / unpacking
+    # ----------------------------------------------------------------
+    def bingo_task_desc_layout(self) -> list[tuple[str, int]]:
+        """THE field table for this DFG's geometry, ``(name, width)`` LSB -> MSB.
+
+        Same name and same shape as the HeMAiA copy's method so the two
+        mini-compilers stay diffable; the widths themselves come from
+        bingo_task_desc_fields() in bingo_node.py.
+
+        The one deliberate exception to that name-for-name correspondence is
+        bingo_task_desc_word_count() below -- see the note in its docstring.
+        """
+        return bingo_task_desc_fields(
+            num_clusters_per_chiplet=self.num_clusters_per_chiplet,
+            num_cores_per_cluster=self.num_cores_per_cluster,
+            dep_tag_width=self.dep_tag_width,
+        )
+
+    def bingo_task_desc_offsets(self) -> list[tuple[str, int, int]]:
+        """The field table resolved to ``(name, lsb, width)``.
+
+        The one place shifts are computed; pack, unpack and any report of the
+        layout all read it, so none of them can drift apart.
+        """
+        offsets = []
+        shift = 0
+        for name, width in self.bingo_task_desc_layout():
+            offsets.append((name, shift, width))
+            shift += width
+        return offsets
+
+    def bingo_task_desc_bits(self) -> int:
+        """Bits the descriptor actually occupies, below the zero padding."""
+        return sum(width for _, width in self.bingo_task_desc_layout())
+
+    def bingo_task_desc_word_count(self) -> int:
+        """Number of host-bus words (AXI-Lite beats) in one descriptor.
+
+        NOT named bingo_task_desc_words(): the HeMAiA mini-compiler has a method
+        of that name which takes a packed descriptor and returns the LIST of its
+        words. Same name for a count and for a splitter is how a line copied
+        between the two copies ends up meaning the other thing without failing,
+        so this side carries the count under a name that says count.
+
+        The width must be a whole number of beats. Rounding up instead would let
+        SW emit an image that no elaborated design can consume, because the RTL
+        refuses the same value outright; see the raise below.
+        """
+        if self.task_desc_width % BINGO_TASK_DESC_WORD_WIDTH:
+            rounded = (
+                (self.task_desc_width + BINGO_TASK_DESC_WORD_WIDTH - 1)
+                // BINGO_TASK_DESC_WORD_WIDTH
+            ) * BINGO_TASK_DESC_WORD_WIDTH
+            raise ValueError(
+                f"task_desc_width={self.task_desc_width} is not a multiple of the "
+                f"{BINGO_TASK_DESC_WORD_WIDTH}-bit host beat, so a descriptor cannot be "
+                f"fetched as whole beats. The RTL refuses exactly this at elaboration "
+                f"(gen_task_desc_beat_check in bingo_hw_manager_top.sv: "
+                f"TaskDescBusWidth % HostAxiLiteDataWidth != 0), so rounding up here would "
+                f"only produce a task list no elaborated design accepts. Use "
+                f"task_desc_width={rounded} (and the matching TaskDescBusWidth in the RTL)."
+            )
+        return self.task_desc_width // BINGO_TASK_DESC_WORD_WIDTH
+
+    def bingo_task_desc_bytes(self) -> int:
+        """Address stride of one descriptor in the task list, in bytes.
+
+        Derived from the same container width as the words themselves, so a
+        header comment can never advertise a stride the image under it does not
+        use.
+        """
+        return self.bingo_task_desc_word_count() * (BINGO_TASK_DESC_WORD_WIDTH // 8)
+
+    def bingo_pack_node(self, node: BingoNode) -> int:
+        """Pack a node into a task descriptor of ``self.task_desc_width`` bits.
+
+        The container width is a parameter, not the 64 bits that a descriptor
+        happened to fit in while it was the same size as a host AXI-Lite beat.
+        The RTL makes the same distinction (TaskDescBusWidth vs
+        HostAxiLiteDataWidth), so the two sides now fail, or fit, together.
+        """
+        values = node.task_desc_field_values(self.num_cores_per_cluster)
+        packed_val = 0
+        for name, shift, width in self.bingo_task_desc_offsets():
+            value = values[name]
+            if not 0 <= value < (1 << width):
+                raise ValueError(
+                    f"Node '{node.node_name}': field '{name}' = {value} does not fit in "
+                    f"{width} bits. Overflowing it would corrupt every field above it."
+                )
+            packed_val |= value << shift
+
+        used = self.bingo_task_desc_bits()
+        if used > self.task_desc_width:
+            # Same condition the RTL checks (TaskDescWidth > TaskDescBusWidth makes
+            # ReservedBitsForTaskDesc negative and elaboration fails), so report the
+            # breakdown and name the knobs that absorb it.
+            raise ValueError(
+                f"Packed task descriptor needs {used} bits but the container is "
+                f"{self.task_desc_width} (BINGO_TASK_DESC_WIDTH / TaskDescBusWidth).\n"
+                + "".join(
+                    f"  {name:<22s} lsb {shift:>4d}  width {width}\n"
+                    for name, shift, width in self.bingo_task_desc_offsets()
+                )
+                + "Raise BINGO_TASK_DESC_WIDTH here and TaskDescBusWidth in the RTL "
+                "together (it must stay a multiple of the 64-bit host beat), or lower "
+                "DepTagWidth -- each step down frees 2 bits."
+            )
+        return packed_val
+
+    def bingo_unpack_node(self, packed_val: int) -> dict:
+        """Inverse of bingo_pack_node, off the same resolved layout."""
+        fields = {}
+        for name, shift, width in self.bingo_task_desc_offsets():
+            fields[name] = (packed_val >> shift) & ((1 << width) - 1)
+        return fields
+
+    def bingo_pack_node_words(self, node: BingoNode) -> list[int]:
+        """A packed descriptor split into host-bus words, LEAST-SIGNIFICANT FIRST.
+
+        The fetch master reads beat 0 from the lower address into the low bits
+        of the descriptor, so ascending address means ascending significance.
+        Emitting the halves the other way round swaps every descriptor.
+        """
+        packed_val = self.bingo_pack_node(node)
+        mask = (1 << BINGO_TASK_DESC_WORD_WIDTH) - 1
+        return [
+            (packed_val >> (i * BINGO_TASK_DESC_WORD_WIDTH)) & mask
+            for i in range(self.bingo_task_desc_word_count())
+        ]
+
     def bingo_emit_task_desc_sv(self) -> str:
         """Emit the SystemVerilog string for all nodes in the DFG."""
         sv_strings = []
 
         # Iterate over all nodes in the graph
         for node in self.node_list:
-            # Call the emit_sv function of each node
-            sv_strings.append(node.emit_sv())
+            # Call the emit_sv function of each node, with THIS DFG's geometry so
+            # the emitted literals are as wide as the DUT's types.
+            sv_strings.append(
+                node.emit_sv(
+                    num_cores_per_cluster=self.num_cores_per_cluster,
+                    task_id_width=BINGO_TASK_ID_WIDTH,
+                )
+            )
 
         # Combine all the SystemVerilog strings with newlines
         return "\n\n".join(sv_strings)
@@ -1221,7 +1387,34 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         return result
 
     def bingo_emit_push_task_sv(self) -> str:
-        """Emit the SystemVerilog string to push tasks for all nodes in the DFG."""
+        """Emit the SystemVerilog push sequences, one AXI-Lite write per descriptor.
+
+        This stimulus drives the AXI-Lite SLAVE task queue (TASK_QUEUE_TYPE==0),
+        which commits one FIFO entry per W beat and cannot reassemble a wider
+        descriptor from several writes. So it is valid only while the container
+        is exactly one host beat, which is what the harness elaborates
+        (TaskDescBusWidth ( HOST_DW ) in test/tb_bingo_hw_manager_harness.svh).
+
+        Splitting a wide descriptor into `name[63:0]` / `name[127:64]` writes
+        here does not fail anywhere: it compiles, and it pushes TWO tasks per
+        descriptor into a queue elaborated for one. Refuse instead -- a
+        multi-beat descriptor is fetched from memory by the MASTER task queue
+        (TASK_QUEUE_TYPE==1), i.e. by bingo_emit_task_list_hex().
+        """
+        num_words = self.bingo_task_desc_word_count()
+        if num_words != 1:
+            raise ValueError(
+                f"bingo_emit_push_task_sv() targets the AXI-Lite slave task queue "
+                f"(TASK_QUEUE_TYPE==0), which commits one descriptor per "
+                f"{BINGO_TASK_DESC_WORD_WIDTH}-bit W beat, but this DFG's "
+                f"task_desc_width={self.task_desc_width} needs {num_words} beats.\n"
+                f"The RTL refuses the same combination at elaboration "
+                f"(gen_task_desc_slave_width_check in bingo_hw_manager_top.sv: "
+                f"TASK_QUEUE_TYPE==0 requires TaskDescBusWidth == HostAxiLiteDataWidth).\n"
+                f"Either build the DFG with task_desc_width={BINGO_TASK_DESC_WORD_WIDTH} to match "
+                f"a TB that elaborates TaskDescBusWidth ( HOST_DW ), or emit the task list with "
+                f"bingo_emit_task_list_hex() for a TASK_QUEUE_TYPE==1 master queue."
+            )
         sv_strings = []
         # Iterate over each chiplet
         for chiplet_id in range(MAX_NUM_CHIPLETS):
@@ -1238,7 +1431,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             chiplet_sv.append(f"    task_queue_master[{chiplet_id}].reset();")
             chiplet_sv.append(f"    done_queue_master[{chiplet_id}].reset();")
             chiplet_sv.append("")
-            # Generate the SystemVerilog push sequence for the sorted nodes
+            # Generate the SystemVerilog push sequence for the sorted nodes: one
+            # AXI-Lite write per descriptor, because that is the only shape the
+            # slave task queue has. See the single-beat check above.
             for node in chiplet_nodes:
                 chiplet_sv.append(f"      task_queue_master[{chiplet_id}].write(task_queue_base[{chiplet_id}], '0, {node.node_name}, '1, resp_chip{chiplet_id});")
                 chiplet_sv.append("    #50;")
@@ -1248,3 +1443,29 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
 
         # Combine all chiplet strings
         return "\n\n".join(sv_strings)
+
+    def bingo_emit_task_list_hex(self, chiplet_id: int) -> str:
+        """Emit one chiplet's task list as a $readmemh image of host-bus words.
+
+        This is the memory the MASTER task queue (TASK_QUEUE_TYPE==1, the path
+        HeMAiA uses) fetches from, so the file has bingo_task_desc_word_count()
+        words per descriptor, least-significant word at the lower address, and a
+        descriptor stride of bingo_task_desc_bytes().
+
+        Both numbers in the header comment are derived from THIS DFG's container
+        width, the same value the words below were packed from. A module-level
+        constant here would have printed the default width's stride over an image
+        packed at another one, and a reader trusting the header would place every
+        descriptor after the first at the wrong address.
+        """
+        digits = BINGO_TASK_DESC_WORD_WIDTH // 4
+        lines = [
+            f"// chiplet {chiplet_id}: {self.bingo_task_desc_word_count()} x "
+            f"{BINGO_TASK_DESC_WORD_WIDTH}-bit words per descriptor, LSW first, "
+            f"stride {self.bingo_task_desc_bytes()} B"
+        ]
+        for node in self._core_balanced_topological_sort(chiplet_id):
+            lines.append(f"// task {node.node_id}: {node.node_name}")
+            for word in self.bingo_pack_node_words(node):
+                lines.append(f"{word:0{digits}x}")
+        return "\n".join(lines)

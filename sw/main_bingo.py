@@ -3,7 +3,11 @@
 # Users need to specify the input DFG file here
 
 from bingo_dfg import BingoDFG
-from bingo_node import BingoNode
+from bingo_node import (
+    BingoNode,
+    BINGO_DEP_TAG_WIDTH,
+    BINGO_TASK_DESC_WORD_WIDTH,
+)
 
 # Example Usage
 # We have 3 cores per cluster
@@ -11,7 +15,27 @@ from bingo_node import BingoNode
 # core 1: DMA
 # core 2: SIMD
 # 2 clusters per chiplet and 4 clusters in total
-bingo_dfg = BingoDFG()
+# Everything here is passed explicitly because it must equal what the DUT is
+# elaborated with in test/tb_bingo_hw_manager_harness.svh:
+#   * geometry  -- the descriptor's cluster-id, core-id and dep-code field widths
+#     are derived from it (`TB_NUM_CLUSTERS_PER_CHIPLET 2, `TB_NUM_CORES_PER_CLUSTER 3
+#     in tb_bingo_hw_manager_top.sv); disagree and every field above them shifts.
+#   * dep_tag_width -- the harness' DEP_TAG_WIDTH.
+#   * task_desc_width -- the harness elaborates .TaskDescBusWidth ( HOST_DW ) with
+#     TASK_QUEUE_TYPE = 0, the single-beat AXI-Lite slave task queue. So the
+#     container is exactly ONE host beat, and the width is taken from
+#     BINGO_TASK_DESC_WORD_WIDTH (that beat itself) rather than written out as a
+#     second 64 that can drift. The module default is the RTL's own default
+#     TaskDescBusWidth = 128, which is a two-beat descriptor and belongs to the
+#     TASK_QUEUE_TYPE == 1 memory-fetch path, not to this stimulus; leaving it at
+#     the default used to emit `name[63:0]` / `name[127:64]` write pairs that
+#     compile against this TB and push two tasks per descriptor. Now
+#     bingo_emit_push_task_sv() refuses any width but one beat, so the mismatch
+#     cannot come back quietly.
+bingo_dfg = BingoDFG(num_clusters_per_chiplet=2,
+                     num_cores_per_cluster=3,
+                     dep_tag_width=BINGO_DEP_TAG_WIDTH,
+                     task_desc_width=BINGO_TASK_DESC_WORD_WIDTH)
 # -----------------------------
 # Chiplet 0's tasks
 # -----------------------------
@@ -289,7 +313,7 @@ bingo_dfg.bingo_visualize_dfg("original_dfg.png")
 # allocator's min-chain-cover reuses a tag whenever two edges on a cell can never
 # be live at once (happens-before / same-core order), keeping the count within
 # DepTagWidth without any separate concurrency-bounding pass.
-TAG_W = 4  # must match the hw_manager's DepTagWidth
+TAG_W = BINGO_DEP_TAG_WIDTH  # the hw_manager's DepTagWidth, from the layout table
 # Transform the DFG to add dummy set nodes
 bingo_dfg.bingo_transform_dfg_add_dummy_set_nodes()
 bingo_dfg.bingo_visualize_dfg("dfg_after_add_dummy_dep_set_nodes.png")
@@ -301,5 +325,15 @@ bingo_dfg.bingo_assign_normal_node_dep_set_info()
 bingo_dfg.bingo_assign_normal_node_dep_check_info()
 # Allocate per-edge identity tags (must run last, after every set/check op is final)
 bingo_dfg.bingo_transform_dfg_allocate_dep_tags(tag_width=TAG_W)
+# Report the resolved descriptor layout before the stimulus. When a widening
+# lands, this is the first thing to compare against the RTL's
+# bingo_hw_manager_task_desc_t -- a field at the wrong offset is otherwise only
+# visible as a workload that schedules nothing.
+desc_bits = bingo_dfg.bingo_task_desc_bits()
+print(f"// Task descriptor: {desc_bits} bits used of {bingo_dfg.task_desc_width} "
+      f"({bingo_dfg.bingo_task_desc_word_count()} x {BINGO_TASK_DESC_WORD_WIDTH}-bit words, "
+      f"stride {bingo_dfg.bingo_task_desc_bytes()} B)")
+for field_name, field_lsb, field_width in bingo_dfg.bingo_task_desc_offsets():
+    print(f"//   [{field_lsb + field_width - 1:>3d}:{field_lsb:>3d}] {field_name}")
 print(bingo_dfg.bingo_emit_task_desc_sv())
 print(bingo_dfg.bingo_emit_push_task_sv())

@@ -54,6 +54,18 @@ module bingo_hw_manager_top #(
     parameter type csr_rsp_t = logic,
     // FIFO Depths
     parameter int unsigned TaskQueueDepth = 32,
+    // Per-core waiting-dep-check queue. It was the one queue in this module fixed at a
+    // literal while its siblings were parameters, and it is the one the stream demux
+    // backpressures on: `stream_demux_core_type_oup_ready[core] = !waiting_..._full[core]`
+    // stalls the WHOLE in-order descriptor stream when a single core's queue fills, so it
+    // is worth being able to sweep. The Python model in model/ already treats it as a
+    // parameter (QueueDepths.waiting), so this makes the RTL and the model agree.
+    //
+    // Measured on fa_decode_4cluster (437 descriptors, 4 clusters): raising it 8 -> 32
+    // changes nothing (57,719 -> 57,679 model cycles, 0.07%). The descriptor stream on
+    // that graph is not limited by this queue. Kept parameterised for the next graph that
+    // is, not as a performance fix.
+    parameter int unsigned WaitingDepCheckQueueDepth = 8,
     parameter int unsigned ChipletDoneQueueDepth = 32,
     parameter int unsigned DoneQueueDepth = 32,
     parameter int unsigned CheckoutQueueDepth = 8,
@@ -765,7 +777,7 @@ module bingo_hw_manager_top #(
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_waiting_dep_check_queue
         fifo_v3 #(
             .FALL_THROUGH ( 1'b0                               ),
-            .DEPTH        ( 8                                  ),
+            .DEPTH        ( WaitingDepCheckQueueDepth          ),
             .dtype        ( bingo_hw_manager_task_desc_t       )
         ) i_waiting_dep_check_queue (
             .clk_i       ( clk_i                               ),

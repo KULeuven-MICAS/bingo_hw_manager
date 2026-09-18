@@ -21,15 +21,30 @@
 //
 // ATOMICITY. AXI-Lite has no bursts, so a multi-beat descriptor is several independent
 // transactions. Two properties make the assembled descriptor atomic anyway:
-//   1. This FSM keeps exactly ONE read outstanding (SEND_AR waits for its own R before issuing the
-//      next AR), so the beats of a descriptor cannot interleave with anything else this master
-//      does, and they arrive in issue order. No reordering protocol, no tags.
+//   1. Every read this master issues carries the SAME AXI ID, and AXI requires same-ID responses
+//      to return in issue order. The beats of a descriptor therefore arrive in order and cannot
+//      interleave with anything else this master does, no matter how many are in flight. This
+//      used to be enforced the blunt way -- one outstanding read -- and it did not need to be.
 //   2. The FIFO push is the single commit point: partial beats live in `desc_partial_q` and are
 //      never visible downstream. A consumer either sees a whole descriptor or nothing.
+//
+// WHY PIPELINE IT. The manager walks the descriptor list in order, and a core cannot be granted a
+// task the manager has not fetched yet. Measured on HeMAiA fa_decode_4cluster (waveform, 4
+// clusters, 437 descriptors): 62 cc between descriptor pops, the task queue EMPTY 99.4% of a
+// 9,917 cc stall, and 27,032 cc of the 44,057 cc run spent walking the list with every core idle.
+// That is one AXI-Lite round trip (~31 cc to L3 through the quad-ctrl fabric) per beat, fully
+// serialised. Overlapping the round trips is the whole fix.
+//
+// `MaxOutstanding = 1` reproduces the old strictly-serial behaviour, so this is opt-in.
 // The task list itself is immutable while the manager runs (the host writes it before `start_i`
 // and this master never writes), so there is no concurrent writer to tear against either.
 module bingo_hw_manager_task_queue_master #(
     parameter int unsigned TaskQueueDepth = 16,
+    /// AXI-Lite reads this master may keep in flight. 1 = the original serial behaviour.
+    /// The upper useful bound is the L3 round trip divided by the per-beat issue rate; beyond
+    /// that the fabric, not this master, is the limit. It must not exceed TaskQueueDepth, since
+    /// in the worst case every beat in flight completes a descriptor that needs a FIFO slot.
+    parameter int unsigned MaxOutstanding = 1,
     parameter int unsigned TaskIdWidth = 12,
     parameter int unsigned CfgBusWidth = 32,
     parameter type     req_lite_t   = logic,
@@ -73,10 +88,11 @@ module bingo_hw_manager_task_queue_master #(
         end
     end
 
+    // SEND_AR/WAIT_R collapsed into one RUN state: issuing and retiring are now independent,
+    // so there is no state in which the master is doing only one of them.
     typedef enum logic [1:0]{
         IDLE,
-        SEND_AR,
-        WAIT_R,
+        RUN,
         FINISH
     } task_queue_master_fsm_t;
     task_queue_master_fsm_t cur_state, next_state;
@@ -108,12 +124,8 @@ module bingo_hw_manager_task_queue_master #(
     );
 
     //////////////////////////////
-    // Beat assembly
+    // Retire side (R) -- declared first because the issue side's credit counter reads it
     //////////////////////////////
-    // `beat_q` selects which slice of the descriptor the next AR addresses. Beat 0 is the LEAST
-    // significant word: the software emitter writes the descriptor low word first at the lower
-    // address, so ascending address == ascending significance. Keep the two in step or every
-    // descriptor arrives byte-swapped in halves.
     logic [BeatCntW-1:0]   beat_q;
     logic                  beat_last;
     logic                  beat_accept;
@@ -123,6 +135,65 @@ module bingo_hw_manager_task_queue_master #(
     assign beat_last   = (Beats == 1) ? 1'b1 : (beat_q == BeatCntW'(Beats - 1));
     assign beat_accept = task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready;
 
+    //////////////////////////////
+    // Issue side (AR) -- runs ahead of the retire side by up to MaxOutstanding beats
+    //////////////////////////////
+    logic [TaskIdWidth-1:0] issue_task_q;   // descriptor the next AR belongs to
+    logic [BeatCntW-1:0]    issue_beat_q;   // beat within that descriptor
+    logic                   issue_done_q;   // every AR for the whole list has been accepted
+    logic                   ar_fire;
+    logic                   issue_beat_last;
+    logic                   can_issue;
+
+    // Outstanding = ARs accepted minus R beats accepted. One extra bit so the compare against
+    // MaxOutstanding cannot alias when both edges land in the same cycle.
+    logic [$clog2(MaxOutstanding+1):0] outstanding_q;
+
+    assign ar_fire         = task_queue_axi_lite_req_o.ar_valid && task_queue_axi_lite_resp_i.ar_ready;
+    assign issue_beat_last = (Beats == 1) ? 1'b1 : (issue_beat_q == BeatCntW'(Beats - 1));
+    // Gate on the FIFO too, not just on credits: in the worst case every beat in flight is a
+    // descriptor's last, so each needs a slot. Refusing to issue when the queue is full is the
+    // cheap conservative form -- an in-flight last beat simply backpressures on r_ready instead.
+    assign can_issue = (cur_state == RUN) && !issue_done_q
+                    && (outstanding_q < MaxOutstanding) && !task_queue_full;
+
+    always_ff @(posedge clk_i, negedge rst_ni) begin
+        if (!rst_ni) begin
+            issue_task_q  <= '0;
+            issue_beat_q  <= '0;
+            issue_done_q  <= 1'b0;
+            outstanding_q <= '0;
+        end else if (task_counter_clear) begin
+            issue_task_q  <= '0;
+            issue_beat_q  <= '0;
+            issue_done_q  <= 1'b0;
+            outstanding_q <= '0;
+        end else begin
+            if (ar_fire) begin
+                if (!issue_beat_last) begin
+                    issue_beat_q <= issue_beat_q + 1'b1;
+                end else begin
+                    issue_beat_q <= '0;
+                    if (issue_task_q == TaskIdWidth'(num_task_i - 1)) issue_done_q <= 1'b1;
+                    else                                             issue_task_q <= issue_task_q + 1'b1;
+                end
+            end
+            // Both can fire in the same cycle; the net change is then zero.
+            case ({ar_fire, beat_accept})
+                2'b10:   outstanding_q <= outstanding_q + 1'b1;
+                2'b01:   outstanding_q <= outstanding_q - 1'b1;
+                default: outstanding_q <= outstanding_q;
+            endcase
+        end
+    end
+
+    //////////////////////////////
+    // Beat assembly
+    //////////////////////////////
+    // `beat_q` selects which slice of the descriptor the next AR addresses. Beat 0 is the LEAST
+    // significant word: the software emitter writes the descriptor low word first at the lower
+    // address, so ascending address == ascending significance. Keep the two in step or every
+    // descriptor arrives byte-swapped in halves.
     // Hold every beat but the last; splice the last one in combinationally so the descriptor is
     // pushed on the same handshake that completes it (no extra state, no bubble).
     always_ff @(posedge clk_i, negedge rst_ni) begin
@@ -187,92 +258,68 @@ module bingo_hw_manager_task_queue_master #(
 
     // Next State Logic
     always_comb begin : task_queue_master_fsm_next_state_logic
-        // Default values
         next_state = cur_state;
         case (cur_state)
             IDLE: begin
-                if (start_i) begin
-                    next_state = SEND_AR;
-                end
+                if (start_i) next_state = RUN;
             end
-            SEND_AR: begin
-                if (task_queue_axi_lite_req_o.ar_valid && task_queue_axi_lite_resp_i.ar_ready) begin
-                    next_state = WAIT_R;
-                end
-            end
-            WAIT_R: begin
-                if (beat_accept) begin
-                    // Only the LAST beat completes a descriptor; intermediate beats just fetch the
-                    // next slice of the same one, so the terminal compare must not be evaluated
-                    // for them or the list would end `Beats` times too early.
-                    if (!beat_last) begin
-                        next_state = SEND_AR;
-                    end else if (task_counter_q == (num_task_i - 1)) begin
-                        next_state = FINISH;
-                    end else begin
-                        next_state = SEND_AR;
-                    end
+            RUN: begin
+                // The list is finished when the LAST descriptor RETIRES, not when its AR is
+                // issued -- with reads in flight those are different cycles.
+                if (beat_accept && beat_last && (task_counter_q == (num_task_i - 1))) begin
+                    next_state = FINISH;
                 end
             end
             FINISH: begin
                 next_state = IDLE;
             end
-            default: begin
-                next_state = IDLE;
-            end
+            default: next_state = IDLE;
         endcase
     end
 
     // Output Logic
     always_comb begin : task_queue_master_fsm_output_logic
-        // Default values
-        task_queue_axi_lite_req_o.ar = '0;
+        task_queue_axi_lite_req_o.ar       = '0;
         task_queue_axi_lite_req_o.ar_valid = 1'b0;
-        task_counter_en = 1'b0;
-        task_counter_clear = 1'b0;
-        reset_start_o = '0;
-        reset_start_en_o = 1'b0;
+        task_counter_en                    = 1'b0;
+        task_counter_clear                 = 1'b0;
+        reset_start_o                      = '0;
+        reset_start_en_o                   = 1'b0;
         case (cur_state)
             IDLE: begin
-                task_queue_axi_lite_req_o.ar = '0;
-                task_queue_axi_lite_req_o.ar_valid = 1'b0;
-                task_counter_en = 1'b0;
-                task_counter_clear = 1'b0;
+                // nothing: defaults hold the master quiet until start_i
             end
-            SEND_AR: begin
-                // descriptor stride + within-descriptor beat offset. DescBytes, not the bus width:
-                // conflating the two is what made the old formula work only while a descriptor was
-                // exactly one beat.
+            RUN: begin
+                // ISSUE. Address comes from the ISSUE counters, which run ahead of the retire
+                // counters. descriptor stride + within-descriptor beat offset; DescBytes, not the
+                // bus width -- conflating the two is what made the old formula work only while a
+                // descriptor was exactly one beat.
                 task_queue_axi_lite_req_o.ar.addr = task_list_base_addr_i
-                                                  + (task_counter_q * DescBytes)
-                                                  + (beat_q * BeatBytes);
+                                                  + (issue_task_q * DescBytes)
+                                                  + (issue_beat_q * BeatBytes);
                 task_queue_axi_lite_req_o.ar.prot = 3'b000;
-                task_queue_axi_lite_req_o.ar_valid = 1'b1;
-                task_counter_en = 1'b0;
-                task_counter_clear = 1'b0;
-                reset_start_o = '0;
-                reset_start_en_o = 1'b0;
-            end
-            WAIT_R: begin
-                // The descriptor index advances once per DESCRIPTOR, not once per beat.
+                task_queue_axi_lite_req_o.ar_valid = can_issue;
+                // RETIRE. The descriptor index advances once per DESCRIPTOR, not once per beat.
                 task_counter_en = beat_accept && beat_last;
             end
             FINISH: begin
-                task_queue_axi_lite_req_o.ar = '0;
-                task_queue_axi_lite_req_o.ar_valid = 1'b0;
-                task_counter_en = 1'b0;
                 task_counter_clear = 1'b1;
-                reset_start_o = '0;
-                reset_start_en_o = 1'b1;
+                reset_start_o      = '0;
+                reset_start_en_o   = 1'b1;
+            end
+            default: begin
+                // defaults
             end
         endcase
     end
+
     // Compose the R channel to the task queue fifo.
-    // r_ready is qualified by WAIT_R: the old unconditional `~full` accepted a beat in ANY state,
-    // which with more than one beat in flight would splice a stray response into the wrong half of
-    // a descriptor. Intermediate beats only need a register, so they do not consult the FIFO; only
-    // the committing beat needs space.
-    assign task_queue_axi_lite_req_o.r_ready = (cur_state == WAIT_R) && (!beat_last || !task_queue_full);
+    // Qualified by RUN rather than by a wait state: responses may now arrive while further ARs are
+    // still being issued, so there is no state in which a legitimate beat should be refused. What
+    // must NOT happen is accepting a beat outside the run (a stray response would splice into the
+    // wrong half of a descriptor), hence the state qualifier is kept. Intermediate beats only need
+    // a register, so they do not consult the FIFO; only the committing beat needs a slot.
+    assign task_queue_axi_lite_req_o.r_ready = (cur_state == RUN) && (!beat_last || !task_queue_full);
     assign task_queue_push     = beat_accept && beat_last;
     assign task_queue_data_in  = desc_t'(desc_assembled);
 endmodule

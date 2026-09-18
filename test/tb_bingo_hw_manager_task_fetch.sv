@@ -35,13 +35,25 @@ module tb_bingo_hw_manager_task_fetch();
     forever #(CLK_PERIOD/2) clk_i = ~clk_i;
   end
 
-  // Two independent instances: the degenerate 1-beat case and the 2-beat case.
-  int unsigned errs_1beat, errs_2beat;
+  // Four instances: {1,2} beats per descriptor x {serial, pipelined} issue.
+  // The pipelined cases are the point of MaxOutstanding: with several reads in flight the
+  // atomicity invariant (a descriptor is committed only when ALL of its beats have landed, in
+  // order) stops being guaranteed by the FSM shape and starts being guaranteed by same-ID AXI
+  // ordering plus the single commit point. If that reasoning is wrong these cases catch it.
+  int unsigned errs_1beat, errs_2beat, errs_1beat_p, errs_2beat_p;
 
-  fetch_case #(.AW(AW), .DW(DW), .DESC_W(64),  .NUM_TASK(7),  .CASE_NAME("Beats=1")) i_case1 (
+  fetch_case #(.AW(AW), .DW(DW), .DESC_W(64),  .NUM_TASK(7),  .OUTSTANDING(1),
+               .CASE_NAME("Beats=1 serial")) i_case1 (
     .clk_i(clk_i), .rst_ni(rst_ni), .errors_o(errs_1beat));
-  fetch_case #(.AW(AW), .DW(DW), .DESC_W(128), .NUM_TASK(11), .CASE_NAME("Beats=2")) i_case2 (
+  fetch_case #(.AW(AW), .DW(DW), .DESC_W(128), .NUM_TASK(11), .OUTSTANDING(1),
+               .CASE_NAME("Beats=2 serial")) i_case2 (
     .clk_i(clk_i), .rst_ni(rst_ni), .errors_o(errs_2beat));
+  fetch_case #(.AW(AW), .DW(DW), .DESC_W(64),  .NUM_TASK(7),  .OUTSTANDING(4),
+               .CASE_NAME("Beats=1 pipelined")) i_case3 (
+    .clk_i(clk_i), .rst_ni(rst_ni), .errors_o(errs_1beat_p));
+  fetch_case #(.AW(AW), .DW(DW), .DESC_W(128), .NUM_TASK(11), .OUTSTANDING(4),
+               .CASE_NAME("Beats=2 pipelined")) i_case4 (
+    .clk_i(clk_i), .rst_ni(rst_ni), .errors_o(errs_2beat_p));
 
   initial begin
     rst_ni = 1'b0;
@@ -49,7 +61,7 @@ module tb_bingo_hw_manager_task_fetch();
     rst_ni = 1'b1;
     // Both cases self-terminate; give them a generous ceiling.
     repeat (4000) @(posedge clk_i);
-    errors = errs_1beat + errs_2beat;
+    errors = errs_1beat + errs_2beat + errs_1beat_p + errs_2beat_p;
     $display("--------------------------------------------------");
     if (errors == 0) begin
       $display("|           SIMULATION PASSED                   |");
@@ -69,6 +81,7 @@ module fetch_case #(
   parameter int unsigned DW = 64,
   parameter int unsigned DESC_W = 128,
   parameter int unsigned NUM_TASK = 8,
+  parameter int unsigned OUTSTANDING = 1,
   parameter string       CASE_NAME = "case"
 ) (
   input  logic clk_i,
@@ -102,14 +115,21 @@ module fetch_case #(
   end
 
   // ---- behavioural AXI-Lite task memory ---------------------------------------------------
-  // Serves one read at a time with a variable-latency response, and RECORDS every address it is
-  // asked for so the checker can verify the stride.
+  // Serves SEVERAL reads at a time, in issue order, with a variable-latency response, and RECORDS
+  // every address it is asked for so the checker can verify the stride.
+  //
+  // It used to serve exactly one, and it did so with a bug that only a pipelined master could
+  // expose: `ar_ready` was registered from the PREVIOUS cycle's state, so the model could complete
+  // an AR handshake and then discard the request on its `!pend_valid` guard. The master counted an
+  // issue the memory never served. A one-outstanding master never had a second AR ready soon
+  // enough to hit it. Modelling a fabric that cannot pipeline would have made the pipelined DUT
+  // look broken -- so the fix is a real queue, not a tighter guard.
+  localparam int unsigned MEM_Q_DEPTH = 8;
   addr_t seen_addr [$];
   logic  ar_hs;
   assign ar_hs = req.ar_valid && rsp.ar_ready;
 
-  addr_t pend_addr;
-  logic  pend_valid;
+  addr_t       pend_q [$];
   int unsigned lat;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
@@ -117,30 +137,32 @@ module fetch_case #(
       rsp.ar_ready <= 1'b0;
       rsp.r_valid  <= 1'b0;
       rsp.r        <= '0;
-      pend_valid   <= 1'b0;
-      pend_addr    <= '0;
       lat          <= 0;
+      pend_q.delete();
     end else begin
-      // accept an AR only when no response is in flight
-      rsp.ar_ready <= !pend_valid && !rsp.r_valid;
-      if (req.ar_valid && rsp.ar_ready && !pend_valid) begin
-        pend_addr  <= req.ar.addr;
-        pend_valid <= 1'b1;
-        lat        <= (req.ar.addr[5:3] % 3);  // 0..2 cycles, deterministic jitter
+      // Room for one more even if an AR is accepted this cycle, so a registered ar_ready can
+      // never promise space the queue does not have.
+      rsp.ar_ready <= (pend_q.size() < (MEM_Q_DEPTH - 1));
+      // EVERY accepted handshake is recorded. No guard may drop one: the master has already
+      // counted it as issued and will wait forever for the response.
+      if (req.ar_valid && rsp.ar_ready) begin
+        pend_q.push_back(req.ar.addr);
         seen_addr.push_back(req.ar.addr);
       end
-      if (pend_valid) begin
+      if (pend_q.size() != 0) begin
         if (lat != 0) begin
           lat <= lat - 1;
         end else if (!rsp.r_valid) begin
-          // serve the beat: index the golden list by descriptor and beat
-          automatic int unsigned off  = int'((pend_addr - BASE));
+          // Serve the HEAD: same-ID reads must return in issue order, which is precisely the
+          // property the master's atomicity argument rests on.
+          automatic int unsigned off  = int'((pend_q[0] - BASE));
           automatic int unsigned didx = off / DESC_BYTES;
           automatic int unsigned bidx = (off % DESC_BYTES) / BEAT_BYTES;
-          rsp.r.data <= (didx < NUM_TASK) ? golden[didx][bidx*DW +: DW] : {DW{1'bx}};
-          rsp.r.resp <= 2'b00;
+          rsp.r.data  <= (didx < NUM_TASK) ? golden[didx][bidx*DW +: DW] : {DW{1'bx}};
+          rsp.r.resp  <= 2'b00;
           rsp.r_valid <= 1'b1;
-          pend_valid  <= 1'b0;
+          pend_q.pop_front();
+          lat <= (off[5:3] % 3);   // 0..2 cycles of deterministic jitter for the NEXT one
         end
       end
       if (rsp.r_valid && req.r_ready) begin
@@ -165,6 +187,7 @@ module fetch_case #(
 
   bingo_hw_manager_task_queue_master #(
     .TaskQueueDepth (4                    ),   // deliberately SMALL: forces back-pressure
+    .MaxOutstanding (OUTSTANDING          ),
     .TaskIdWidth    (12                   ),
     .CfgBusWidth    (32                   ),
     .req_lite_t     (tb_req_t             ),

@@ -37,6 +37,14 @@ class SimConfig:
     push_interval: int = 5  # cycles between task pushes per chiplet
     random_seed: int = 0
     done_queue_mode: Literal["single", "per_core"] = "single"
+    # Cycles without a task completing before run() calls it a deadlock. None = DERIVE it
+    # from the workload, which is the only safe default: the detector cannot tell a hung
+    # manager from a long task, so a fixed threshold silently reports a false deadlock on
+    # any graph whose longest task outlives it. A real FlashAttention decode graph has
+    # tasks of ~12,000 cycles against the old hardcoded 5,000, so it failed on a descriptor
+    # list the RTL executes correctly -- and a checker that vetoes correct graphs is worse
+    # than no checker. Derived = 4x the longest work_delay, floor 5,000.
+    deadlock_threshold: Optional[int] = None
 
 
 @dataclass
@@ -111,7 +119,12 @@ class BingoSimulator:
     def run(self, max_cycles: int = 200000) -> SimResult:
         last_progress_cycle = 0
         last_completed_count = 0
-        deadlock_threshold = 5000  # cycles without progress
+        deadlock_threshold = self.config.deadlock_threshold
+        if deadlock_threshold is None:
+            longest = max((t.work_delay for ts in self._task_lists.values() for t in ts
+                           if t.work_delay is not None), default=0)
+            longest = max(longest, self.config.work_delay_range[1])
+            deadlock_threshold = max(5000, 4 * longest)
 
         for cycle in range(max_cycles):
             # 1. Push tasks into chiplet task queues (one per chiplet per push_interval)

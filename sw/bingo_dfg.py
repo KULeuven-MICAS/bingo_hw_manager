@@ -57,18 +57,11 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # what it needs is a shared tag across the join's producers, which the
         # tag allocator's general path provides. Off by default until the RTL
         # regression has run against it.
-        # (B) MULTI-COLUMN CHECK: one descriptor checks every producer column
-        # of a join. Structurally safe on its own -- with (A) off each producer
+        # MULTI-COLUMN CHECK: one descriptor checks every producer column
+        # of a join. Structurally safe: each producer
         # has exactly one consumer, so a tag group is {one consumer + its
         # producers} and its edges occupy distinct cells by construction.
         self.enable_multi_col_check = False
-        # (A) MULTI-ROW SET: one descriptor releases every consumer sharing a
-        # target (chiplet, cluster). This one MERGES tag groups -- a producer
-        # feeding several consumers links them, and the component can grow until
-        # two of its edges share a cell. The allocator rejects that (see
-        # bingo_transform_dfg_allocate_dep_tags), so leaving this off is safe and
-        # turning it on is checked, never silent.
-        self.enable_multi_row_set = False
         self._stream_order_cache = None
     def bingo_add_node(self, node_obj: BingoNode) -> None:
         """Add a node to the DFG."""
@@ -261,59 +254,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                             dummy_set_node.cerf_carry = (cur_node.node_type == "gating")
                             # Add the dummy set node to the graph
                             self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
-            if len(local_succ_list) > 1 and self.enable_multi_row_set:
-                # (A) MULTI-ROW SET. dep_set_code is already a bitmask over
-                # consumer ROWS, so ONE op releases every successor that shares a
-                # target (chiplet, cluster) -- only dep_set_cluster_id and
-                # dep_set_chiplet_id are scalar, so those are what actually force
-                # a split. Emit one op per distinct target group instead of one
-                # per successor.
-                # ONE PRESENCE BIT PER ROW. A row is a (cluster, core) pair, and
-                # a set writes a single bit there -- so two successors on the SAME
-                # row cannot share one op: the first to check drains the bit and
-                # the second starves. Partition each (chiplet, cluster) target
-                # into SLOTS, slot j taking the j-th successor of each core, so
-                # every op covers each row at most once. Successors that collide
-                # on a row land in different slots and therefore get different
-                # tags, exactly as the one-op-per-edge lowering gave them.
-                by_row: dict = {}
-                for succ in local_succ_list:
-                    by_row.setdefault(
-                        (succ.assigned_chiplet_id, succ.assigned_cluster_id,
-                         succ.assigned_core_id), []).append(succ)
-                groups: dict = {}
-                for (chip, cl, _co), row_succs in by_row.items():
-                    for slot, succ in enumerate(row_succs):
-                        groups.setdefault((chip, cl, slot), []).append(succ)
-                # Keep the group holding a same-core successor on cur_node's own
-                # descriptor (that edge is ordered by the core queue anyway);
-                # every other group becomes one dummy_set covering the WHOLE group.
-                keys = sorted(groups, key=lambda k: (
-                    not any(sc.assigned_core_id == cur_node.assigned_core_id
-                            for sc in groups[k]), k))
-                for gi, k in enumerate(keys[1:]):
-                    grp = groups[k]
-                    assert len({(sc.assigned_cluster_id, sc.assigned_core_id)
-                                for sc in grp}) == len(grp), (
-                        f"multi-row dep_set for {cur_node.node_name} would write "
-                        f"one presence bit for two consumers on the same row")
-                    dummy_set_node = BingoNode(
-                        assigned_chiplet_id=cur_node.assigned_chiplet_id,
-                        assigned_cluster_id=cur_node.assigned_cluster_id,
-                        assigned_core_id=cur_node.assigned_core_id,
-                        node_name=f"dummy_set_grp_{cur_node.node_name}_{gi}"
-                    )
-                    dummy_set_node.node_type = "dummy"
-                    dummy_set_node.dep_set_enable = True
-                    dummy_set_node.dep_set_list = sorted(
-                        {sc.assigned_core_id for sc in grp})
-                    dummy_set_node.dep_set_chiplet_id = k[0]
-                    dummy_set_node.dep_set_cluster_id = k[1]
-                    dummy_set_node.dep_check_enable = False
-                    dummy_set_node.dep_check_list = []
-                    dummy_set_node.remote_dep_set_all = False
-                    self.bingo_insert_node_after(cur_node, dummy_set_node, grp)
-            elif len(local_succ_list) > 1:
+            if len(local_succ_list) > 1:
                 # Now the local multiple successor case
                 # We need local_successors-1 dummy set nodes
                 print(f"Adding dummy set nodes for {cur_node.node_name} with local successors {[succ.node_name for succ in local_succ_list]}")
@@ -412,7 +353,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             remaining_core_ids = sorted(set(pred.assigned_core_id for pred in remaining_preds))
 
             if len(remaining_core_ids) >= 2 and self.enable_multi_col_check:
-                # (B) MULTI-COLUMN CHECK. One descriptor checks every producer
+                # MULTI-COLUMN CHECK. One descriptor checks every producer
                 # column at once. The matrix check is all-or-nothing -- a check
                 # that cannot pass consumes nothing -- so the partially-arrived
                 # column is left intact for the retry and no deadlock window
@@ -607,30 +548,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     succ for succ in self.successors(cur_node)
                     if not (succ.node_type == "dummy" and succ.dep_set_enable)
                 ]
-                if len(succs) > 1 and self.enable_multi_row_set:
-                    # (A) one multi-row set op. The dummy-set pass already split
-                    # every OTHER target (chiplet, cluster) off, so what is left
-                    # must share one -- assert it rather than silently emitting a
-                    # set aimed at the wrong cluster.
-                    targets = {(sc.assigned_chiplet_id, sc.assigned_cluster_id)
-                               for sc in succs}
-                    assert len(targets) == 1, (
-                        f"multi-row dep_set for {cur_node.node_name} spans "
-                        f"{targets}; the dummy-set pass should have split these")
-                    rows = [(sc.assigned_cluster_id, sc.assigned_core_id)
-                            for sc in succs]
-                    assert len(set(rows)) == len(rows), (
-                        f"multi-row dep_set for {cur_node.node_name} targets the "
-                        f"same row twice ({rows}) -- one presence bit cannot "
-                        f"release two consumers")
-                    chip, cl = targets.pop()
-                    cur_node.dep_set_enable = True
-                    cur_node.dep_set_list = sorted(
-                        {sc.assigned_core_id for sc in succs})
-                    cur_node.remote_dep_set_all = False
-                    cur_node.dep_set_chiplet_id = chip
-                    cur_node.dep_set_cluster_id = cl
-                elif len(succs)>1:
+                if len(succs)>1:
                     print(f"Warning: More than one local successor for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
                 elif len(succs)==1:
                     cur_node.dep_set_enable = True
@@ -677,11 +595,12 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         if tag_width is None:
             tag_width = self.dep_tag_width
         max_tags = 1 << tag_width
-        # MUST be the same order the emitter uses. Allocating tags against
-        # nx.topological_sort while the emitters walked a DIFFERENT per-core order
-        # (_core_balanced_topological_sort) is how two simultaneously-live edges
-        # end up sharing one tag -- the run then deadlocks with no visible tag
-        # mismatch to catch it. One order, derived once. See bingo_stream_order.
+        # MUST be the same order the emitter uses. Allocating tags against one
+        # topological order while an emitter walks a DIFFERENT per-core order is
+        # how two simultaneously-live edges end up sharing one tag -- the run then
+        # deadlocks with no visible tag mismatch to catch it. The chain cover below
+        # counts same-core sequencing as happens-before, so it is only sound for
+        # THIS order. One order, derived once. See bingo_stream_order.
         topo = self.bingo_stream_order()
         pos = {n: i for i, n in enumerate(topo)}
 
@@ -771,39 +690,11 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         return False
             return True
 
-        # INVARIANT: a tag group holds ONE tag, and a cell holds ONE presence
-        # bit per tag. So two edges of the same group may land in the same cell
-        # only if they are ORDERED -- otherwise the first consumer to check
-        # drains the single bit and the second starves forever, silently.
-        # Merging ops (multi-row set / multi-column check) links groups
-        # transitively through shared producers, and a big enough component will
-        # eventually fold two concurrent edges onto one cell. Catch it here: a
-        # compile error naming the two edges beats a hang in silicon.
-        for gi in range(n_groups):
-            per_cell: dict = {}
-            for (su, cv) in edges_of[gi]:
-                cell = (cv.assigned_chiplet_id, cv.assigned_cluster_id,
-                        cv.assigned_core_id, su.assigned_core_id)
-                per_cell.setdefault(cell, []).append((su, cv))
-            for cell, el in per_cell.items():
-                for a in range(len(el)):
-                    for b in range(a + 1, len(el)):
-                        (sa, ca), (sb, cb) = el[a], el[b]
-                        fwd = (sb is ca) or (sb in _descendants(ca))
-                        bwd = (sa is cb) or (sa in _descendants(cb))
-                        if not fwd and not bwd:
-                            raise ValueError(
-                                "dep-tag allocation: tag group would put TWO "
-                                f"concurrently-live edges on cell {cell}, which "
-                                "is one presence bit -- the first consumer to "
-                                "check would drain it and the second would hang."
-                                f"\n  edge A: {sa.node_name} -> {ca.node_name}"
-                                f"\n  edge B: {sb.node_name} -> {cb.node_name}"
-                                "\n  cell = (chiplet, cluster, consumer core, "
-                                "producer core)\n  These two ops must not be "
-                                "merged into one descriptor; split them (that is "
-                                "what enable_multi_row_set=False does).")
-
+        # The one-bit-per-cell invariant (two edges of one group may share a cell
+        # only if they are ordered) is validated on the OUTPUT by
+        # bingo_validate_no_hang, which is where it belongs: it catches a bad
+        # assignment however it arose, instead of guessing at the inputs.
+        #
         # FAST PATH -- every group is one edge in one cell, which is what the
         # dummy passes guarantee today. Per cell the conflict graph is the
         # incomparability graph of a partial order, so by Dilworth the minimum
@@ -1855,84 +1746,6 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
 
         # Combine all the SystemVerilog strings with newlines
         return "\n\n".join(sv_strings)
-
-    def _core_balanced_topological_sort(self, chiplet_id: int) -> list:
-        """SUPERSEDED by bingo_stream_order -- kept only for comparison.
-
-        Do NOT use this to emit a descriptor list. The dep-tag allocator derives
-        its happens-before order from bingo_stream_order, and emitting a
-        different per-core order than the one tags were allocated against can
-        leave two simultaneously-live edges sharing a tag, which deadlocks with
-        nothing visible to catch it. One order, derived once.
-
-        Topological sort that interleaves tasks across cores.
-
-        The standard topological sort may dump many tasks for the same core
-        consecutively (e.g., a task + its dummy_set/check children). This
-        overflows the per-core waiting queue (depth 8) in the RTL, causing
-        the task_queue demux to stall and block tasks for other cores.
-
-        This sort maintains topological validity while spreading tasks across
-        cores round-robin: pick the ready task whose core was least recently
-        used.
-        """
-        # Filter nodes for this chiplet
-        chiplet_nodes = set(
-            node for node in self.nodes
-            if node.assigned_chiplet_id == chiplet_id
-        )
-        if not chiplet_nodes:
-            return []
-
-        # Compute in-degree within chiplet subgraph
-        in_degree = {}
-        for node in chiplet_nodes:
-            in_degree[node] = 0
-        for node in chiplet_nodes:
-            for succ in self.successors(node):
-                if succ in chiplet_nodes:
-                    in_degree[succ] = in_degree.get(succ, 0) + 1
-
-        # Ready set: nodes with in_degree == 0
-        from collections import defaultdict
-        ready_by_core = defaultdict(list)
-        for node in chiplet_nodes:
-            if in_degree[node] == 0:
-                ready_by_core[node.assigned_core_id].append(node)
-
-        result = []
-        last_core = -1
-        num_cores = max(n.assigned_core_id for n in chiplet_nodes) + 1
-
-        while any(ready_by_core.values()):
-            # Pick a core round-robin, preferring one different from last_core
-            chosen_node = None
-            for offset in range(1, num_cores + 1):
-                try_core = (last_core + offset) % num_cores
-                if ready_by_core[try_core]:
-                    chosen_node = ready_by_core[try_core].pop(0)
-                    break
-
-            if chosen_node is None:
-                # Fallback: pick any ready node
-                for core_id in ready_by_core:
-                    if ready_by_core[core_id]:
-                        chosen_node = ready_by_core[core_id].pop(0)
-                        break
-                if chosen_node is None:
-                    break
-
-            result.append(chosen_node)
-            last_core = chosen_node.assigned_core_id
-
-            # Update in-degrees
-            for succ in self.successors(chosen_node):
-                if succ in chiplet_nodes:
-                    in_degree[succ] -= 1
-                    if in_degree[succ] == 0:
-                        ready_by_core[succ.assigned_core_id].append(succ)
-
-        return result
 
     def bingo_emit_push_task_sv(self) -> str:
         """Emit the SystemVerilog push sequences, one AXI-Lite write per descriptor.

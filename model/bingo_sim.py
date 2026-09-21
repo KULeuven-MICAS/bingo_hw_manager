@@ -50,7 +50,10 @@ class SimConfig:
     #       task. This is what races.
     #   "carried"       -- the proposal: the update rides inside the cross-chiplet
     #       dep-set message, so it cannot arrive after the signal it gates.
-    cerf_scope: Literal["global_instant", "separate_msg", "carried"] = "global_instant"
+    # The DEFAULT is what the RTL does. The other two are study modes: a caller
+    # who does not name a scope must not silently get a CERF the hardware has no
+    # register for, because that mode cannot exhibit the cross-die race at all.
+    cerf_scope: Literal["global_instant", "separate_msg", "carried"] = "carried"
     # Extra 0..jitter cycles added to each cross-chiplet message, sampled
     # independently per message. This is what exposes the ordering hazard.
     h2h_latency_jitter: int = 0

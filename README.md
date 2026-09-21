@@ -172,53 +172,17 @@ complete, all 1815 dependency edges respected, zero violations, plus
 `tb_bingo_hw_manager_multiedge`. The cycle effect is ~1.6% -- the win is L2
 storage, because the scheduler is already at 99.6% of the DFG critical path.
 
-`enable_multi_row_set` (multi-row `dep_set`) is implemented but **blocked** by
-the invariant below; the allocator refuses it rather than emitting a graph that
-hangs.
-
-### The one-bit-per-cell invariant
-
-This is the rule that decides which ops may be merged, so it is worth stating
-precisely.
-
-A dep-matrix cell is `(consumer core, producer core)`, and it holds **one
-presence bit per tag**. Bit 5 set in cell `(3, 2)` means "an edge tagged 5 from
-producer core 2 to consumer core 3 has fired and has not been consumed yet".
-
-A descriptor carries exactly **one** `dep_set_tag` and one `dep_check_tag`, and
-every edge needs `producer.dep_set_tag == consumer.dep_check_tag`. So when one op
-covers several edges, all of them are forced onto the same tag — and that
-propagates: if producer P releases C1 and C2 in one set op, their tags are tied
-to P's; if C1 also has producer Q, Q is tied too. Following those links gives a
-connected component, a **tag group**, which must share a single tag.
-
-**The invariant: within one tag group, no two edges that are live at the same
-time may land in the same cell.** They would be the same bit — the first consumer
-to check drains it, and the second waits forever. Nothing deadlocks loudly and no
-signal is lost visibly; the second task simply never runs.
-
-Concretely, from the real FA graph. The entry node fans out to three tasks in
-cluster 2: `WarmZero` on core 2, `Geom0` on core 1, and `Geom1` on core 1 as
-well. A multi-row set writes one bit per **row**, and a row is a core — so
-`Geom0` and `Geom1` share one bit. `Geom0` checked, passed, and drained it;
-`Geom1` hung.
-
-`bingo_transform_dfg_allocate_dep_tags` detects this and **raises**, naming both
-edges and the cell, rather than emitting a graph that hangs. Two distinct
-violations were found by running the real FA graph on the cycle model, and both
-are regression-tested in `model/tests/test_multi_edge_deps.py`:
-
-1. **Row collision** — the case above. Fixed by partitioning a fan-out into
-   slots, so no set op ever covers one row twice.
-2. **Group merging** — multi-row set links a producer's consumers into one group,
-   and on FA that group grows until two of its concurrent edges land in the same
-   cell. This one is not fixable by local repair, and it is why
-   `enable_multi_row_set` stays off.
-
 Note that **running out of tags is not the limit here** — the allocator has room.
 One op per edge peaks at 16 live tags in a cell at `DepTagWidth=4` (all of it),
-while merged ops need 8–9. It is this invariant that blocks the merge, not
+while merged ops need 8–9. It was this invariant that blocked the merge, not
 capacity.
+
+Multi-column check is not exposed to the same hazard: a group is one consumer and
+its producers, so its edges sit in distinct columns of a single row and cannot
+alias by construction. The invariant is therefore enforced where it still can be
+violated — on the allocator's **output**, by `bingo_validate_no_hang` (check 3),
+which names both edges and the cell and runs on every production compile. It is
+negative-tested in `model/tests/test_hang_oracle.py::TestCatchesCellAliasing`.
 
 ## Identity-Aware Dependencies (per-edge tags)
 
@@ -520,7 +484,6 @@ Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`):
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_load_monitor.sv` | Load monitoring |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
-| — | `bingo_hw_manager_dep_check_sum.sv` | H2H fan-in barrier counter — standalone, **not yet instantiated** and not listed in `Bender.yml` |
 
 ## Testing
 
@@ -558,14 +521,11 @@ make sim-bingo_hw_manager_top.log           # or _tagged / _tagged_mc / _dep_mat
                                             #    _cerf_basic / _cerf_skip / _cerf_mc /
                                             #    _multiedge / _task_fetch
 
-# Python model + compiler tests (106 tests)
+# Python model + compiler tests (114 tests)
 make test-model                             # python3 -m pytest model/tests/ -v
 
-# NOT USABLE AS SHIPPED: `make test-all-patterns` imports scripts/codegen/,
-# which is not in this repo, and `scripts/cross_validate.py` needs a model trace
-# and an RTL log passed explicitly (--model-trace / --rtl-log).
-# make test-all-patterns
-# make test-cross-validate
+# Cross-validate a model trace against an RTL log (both passed explicitly)
+make test-cross-validate MODEL_TRACE=<trace> RTL_LOG=<log>
 
 # Dependency-sync gate as a standalone report
 python3 model/tests/test_dep_sync.py --seeds 20 --clusters 2

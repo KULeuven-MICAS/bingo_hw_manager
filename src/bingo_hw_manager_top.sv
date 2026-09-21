@@ -1449,7 +1449,7 @@ module bingo_hw_manager_top #(
         .rst_ni             (rst_ni),
         .task_dispatched_i  (ready_queue_pop),
         .task_done_i        (done_q_push),
-        .pending_per_core_o (/* CSR readable — connect when needed */),
+        .pending_per_core_o (/* unconnected: no CSR path exists yet; total_pending_o is the one that is read */),
         .total_pending_o    (load_total_pending_o)
     );
 

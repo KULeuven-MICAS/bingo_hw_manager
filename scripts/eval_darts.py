@@ -160,29 +160,46 @@ def dfg_to_task_descriptors(dfg, work_delays=None, active_nodes=None):
     work_delays = work_delays or {}
     all_chiplets = sorted(set(n.assigned_chiplet_id for n in dfg.node_list))
 
+    # ---- CERF masks, resolved per GATING node -------------------------------
+    def _resolve_cerf(node):
+        controlled = set(node.cerf_write_groups)
+        if not controlled:
+            return 0, 0
+        if active_nodes is None:
+            activated = controlled
+        else:
+            own = gating_own_targets.get(node, set()) & active_nodes
+            activated = {node_to_group[t] for t in own if t in node_to_group}
+        return (sum(1 << g for g in activated), sum(1 << g for g in controlled))
+
+    gating_cerf = {n: _resolve_cerf(n) for n in dfg.node_list
+                   if n.node_type == "gating"}
+
+    # THE PREDICATE MUST RIDE THE EDGE THAT CROSSES THE DIE.
+    # A gating node's remote successors are not reached by the gating node's own
+    # descriptor: the dummy-set pass inserts a proxy dummy_set on the gating
+    # node's core, and THAT is what sends the cross-chiplet message. If the proxy
+    # does not carry the CERF payload, the predicate travels separately from the
+    # signal that releases the gated task -- and with any D2D jitter the remote
+    # task reads a stale CERF (measured: 11/24 seeds wrong). So a dummy_set
+    # proxying a gating node inherits that node's resolved masks.
+    proxy_cerf = {}
+    for n in dfg.node_list:
+        if n.node_type == "dummy" and n.dep_set_enable:
+            for pred in dfg.predecessors(n):
+                if pred in gating_cerf and gating_cerf[pred][1]:
+                    proxy_cerf[n] = gating_cerf[pred]
+                    break
+
     for chip_id in all_chiplets:
         per_chiplet[chip_id] = []
-        ordered = dfg._core_balanced_topological_sort(chip_id)
+        ordered = dfg.bingo_stream_order(chip_id)
         for node in ordered:
             type_map = {"dummy": 1, "gating": 2}
             tt = type_map.get(node.node_type, 0)
 
-            # Compute cerf_write_mask and cerf_controlled_mask for gating tasks
-            controlled = set(node.cerf_write_groups)
-            if controlled:
-                if active_nodes is None:
-                    activated = controlled
-                else:
-                    # THIS node's own targets that are meant to be active,
-                    # resolved via THIS node's own edges -- not a global
-                    # group-ID lookup, which would alias across reuse.
-                    own_active_targets = gating_own_targets.get(node, set()) & active_nodes
-                    activated = {node_to_group[t] for t in own_active_targets if t in node_to_group}
-                cerf_mask = sum(1 << g for g in activated)
-                cerf_ctrl = sum(1 << g for g in controlled)
-            else:
-                cerf_mask = 0
-                cerf_ctrl = 0
+            cerf_mask, cerf_ctrl = gating_cerf.get(
+                node, proxy_cerf.get(node, (0, 0)))
 
             task = TaskDescriptor(
                 task_type=tt,

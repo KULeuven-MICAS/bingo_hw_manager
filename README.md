@@ -148,6 +148,78 @@ historical 1-bit overlap-detecting design (a second `set` to an already-set bit
 was rejected, creating circular backpressure through the done queue) cannot
 occur.
 
+## The Dummy Tax
+
+The lowering can put only **one set target and one check column** in a
+descriptor, so every fan-out and fan-in becomes extra whole descriptors. On the
+real `fa_decode_4cluster` graph (NKV=64, NQ=2, 4 clusters) that is **79.8% of the
+descriptor list** -- 3022 descriptors, 610 real, 48.4 KB at 128b.
+
+`BingoDFG.enable_multi_col_check` (off by default) emits ONE multi-column check
+for a join instead of a chain of `dummy_check` tasks. **No RTL change is needed:**
+`dep_check_code` is already AND-reduced across columns at a single tag, and the
+clear fires only on a full match, so a partially satisfied join consumes nothing.
+What it needs is a shared tag across the join's producers, which the tag
+allocator's group path provides.
+
+| | descriptors | dummy % | size | cycles @2-3k |
+|---|---|---|---|---|
+| baseline | 3022 | 79.8% | 48.4 KB | 299,688-308,450 |
+| **multi-column check** | **2353** (-22%) | 74.1% | **37.6 KB** | 293,814-301,550 |
+
+Verified end-to-end: 12 model runs across two delay models, all 610 real tasks
+complete, all 1815 dependency edges respected, zero violations, plus
+`tb_bingo_hw_manager_multiedge`. The cycle effect is ~1.6% -- the win is L2
+storage, because the scheduler is already at 99.6% of the DFG critical path.
+
+`enable_multi_row_set` (multi-row `dep_set`) is implemented but **blocked** by
+the invariant below; the allocator refuses it rather than emitting a graph that
+hangs.
+
+### The one-bit-per-cell invariant
+
+This is the rule that decides which ops may be merged, so it is worth stating
+precisely.
+
+A dep-matrix cell is `(consumer core, producer core)`, and it holds **one
+presence bit per tag**. Bit 5 set in cell `(3, 2)` means "an edge tagged 5 from
+producer core 2 to consumer core 3 has fired and has not been consumed yet".
+
+A descriptor carries exactly **one** `dep_set_tag` and one `dep_check_tag`, and
+every edge needs `producer.dep_set_tag == consumer.dep_check_tag`. So when one op
+covers several edges, all of them are forced onto the same tag — and that
+propagates: if producer P releases C1 and C2 in one set op, their tags are tied
+to P's; if C1 also has producer Q, Q is tied too. Following those links gives a
+connected component, a **tag group**, which must share a single tag.
+
+**The invariant: within one tag group, no two edges that are live at the same
+time may land in the same cell.** They would be the same bit — the first consumer
+to check drains it, and the second waits forever. Nothing deadlocks loudly and no
+signal is lost visibly; the second task simply never runs.
+
+Concretely, from the real FA graph. The entry node fans out to three tasks in
+cluster 2: `WarmZero` on core 2, `Geom0` on core 1, and `Geom1` on core 1 as
+well. A multi-row set writes one bit per **row**, and a row is a core — so
+`Geom0` and `Geom1` share one bit. `Geom0` checked, passed, and drained it;
+`Geom1` hung.
+
+`bingo_transform_dfg_allocate_dep_tags` detects this and **raises**, naming both
+edges and the cell, rather than emitting a graph that hangs. Two distinct
+violations were found by running the real FA graph on the cycle model, and both
+are regression-tested in `model/tests/test_multi_edge_deps.py`:
+
+1. **Row collision** — the case above. Fixed by partitioning a fan-out into
+   slots, so no set op ever covers one row twice.
+2. **Group merging** — multi-row set links a producer's consumers into one group,
+   and on FA that group grows until two of its concurrent edges land in the same
+   cell. This one is not fixable by local repair, and it is why
+   `enable_multi_row_set` stays off.
+
+Note that **running out of tags is not the limit here** — the allocator has room.
+One op per edge peaks at 16 live tags in a cell at `DepTagWidth=4` (all of it),
+while merged ops need 8–9. It is this invariant that blocks the merge, not
+capacity.
+
 ## Identity-Aware Dependencies (per-edge tags)
 
 An identity-blind cell (one shared counter per `(consumer_core, producer_core)`
@@ -270,6 +342,7 @@ bingo_hw_manager_top
 | `NUM_CORES_PER_CLUSTER` | 4 | Execution cores per cluster |
 | `NUM_CLUSTERS_PER_CHIPLET` | 2 | Clusters per chiplet |
 | `DepTagWidth` | 4 | Tag width (cell holds up to `2**DepTagWidth` concurrent edges) |
+| `GlobalCerfGroups` | 8 | CERF entries carried across dies by a gating task's dep-set message |
 | `TaskIdWidth` | 12 | Task ID width (max 4096 tasks) |
 | `ChipIdWidth` | 8 | Chiplet ID width (max 256 chiplets) |
 | `HostAxiLiteAddrWidth` | 48 | Host-side AXI address width |
@@ -277,6 +350,7 @@ bingo_hw_manager_top
 | `DeviceAxiLiteAddrWidth` | 48 | Device-side AXI address width |
 | `DeviceAxiLiteDataWidth` | 32 | Device-side AXI data width (done info) |
 | `TaskQueueDepth` | 32 | Incoming task FIFO depth |
+| `TaskQueueMaxOutstanding` | 1 | AXI-Lite reads in flight for the master-mode task queue; 1 = serial |
 | `ChipletDoneQueueDepth` | 32 | H2H (from-remote) dep_set mailbox depth |
 | `DoneQueueDepth` | 32 | Per-(core,cluster) done FIFO depth |
 | `CheckoutQueueDepth` | 8 | Per-(core,cluster) checkout FIFO depth |
@@ -313,6 +387,9 @@ When a task's `dep_set_chiplet_id != chip_id_i`, the dependency signal is routed
 4. Remote chiplet processes the signal through its dep matrix set arbiter (input `N_CORES*N_CLUSTERS`, the extra port on the arbiter), using the *sending* task's `assigned_core_id` as the matrix column and its `dep_set_tag`
 
 Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simultaneously. Note that broadcast sets are not yet covered by the per-edge tag allocator (see **Identity-Aware Dependencies**).
+
+A message from a **gating** task additionally carries that die's CERF window —
+see **Cross-Die Conditional Execution**.
 
 ## Power Management
 
@@ -355,6 +432,34 @@ reads it back on `cerf_state_o` — in practice a **gating task** (`task_type=10
 runs on a core and writes the CSR on completion. Because the CERF lives inside
 `bingo_hw_manager_top`, group *N* on chiplet 0 and group *N* on chiplet 1 are
 different physical registers.
+
+#### Cross-Die Conditional Execution
+
+Because the CERF is per-chiplet, a gating task can only write **its own** die's
+register. To let a routing decision on one die gate work on another, a gating
+task's cross-chiplet dep-set message carries the low `GlobalCerfGroups` CERF
+entries with it, and the receiver applies the window in the same cycle it grants
+that message's dep-matrix set.
+
+The ordering is the point. Locally, CERF is race-free structurally: a gated task
+depends on its gating task, so the dependency edge orders the CERF write against
+the read. Sending the predicate as a *separate* message loses that ordering — two
+messages on two paths, and the remote task can see its dependency satisfied while
+its CERF bit is still stale, silently skipping work the router selected. Measured
+in the cycle model, that races in 15–45% of runs depending on D2D jitter, and it
+never deadlocks and never trips a watchdog, so nothing catches it. Carrying the
+window on the edge restores the ordering by construction.
+
+- Only a **gating** task tags its message (`cerf_valid`); tagging every message
+  would let a stale one clobber a newer decision.
+- Groups **outside** the window stay die-local, so `GlobalCerfGroups` is also the
+  boundary between cross-die and local conditional regions.
+- A local software CERF write owns all 32 bits and wins over a window write.
+
+Tests: `model/tests/test_multi_chiplet_cerf.py` (race characterisation vs. jitter,
+plus a pin on the naive version still racing) and `tb_bingo_hw_manager_cerf_mc`
+(a 2-chiplet RTL test with a negative control — a group outside the window must
+stay local).
 
 The user expresses conditional execution through **conditional edges** in the DFG:
 
@@ -430,11 +535,15 @@ Two layers, both self-contained in this repo:
   - `test_dep_tag_allocator.py` — the tag allocator (min-chain-cover): edge pairing, tag reuse, distinct tags for concurrent edges, capacity backstop
   - `test_cerf_group_allocator.py` — the CERF group allocator: per-chiplet scoping, cross-region reuse, chain-pool sizing, 32-group overflow
   - `test_dep_sync.py` — multi-cluster dispatch-before-producer gate (must be clean under tags); also runnable as a CLI
+  - `test_multi_edge_deps.py` — multi-column `dep_check` / multi-row `dep_set`: lowering shape, ordering, and the one-bit-per-cell invariant
+  - `test_multi_chiplet_cerf.py` — cross-die conditional execution: the carried predicate vs. a separate broadcast, swept against D2D jitter
 - **RTL testbench harness** (`test/tb_bingo_hw_manager_harness.svh`) with deadlock
   detection, dep-matrix monitoring, and trace logging, driving the testbenches:
   `tb_bingo_hw_manager_top` (multi-chiplet), `tb_bingo_hw_manager_cerf_basic/skip`
   (CERF), `tb_bingo_hw_manager_dep_matrix` (matrix unit), and
-  `tb_bingo_hw_manager_tagged`/`_tagged_mc` (identity-aware deps end-to-end).
+  `tb_bingo_hw_manager_tagged`/`_tagged_mc` (identity-aware deps end-to-end),
+  `tb_bingo_hw_manager_multiedge` (a 3-way join as ONE multi-column dep_check)
+  and `tb_bingo_hw_manager_cerf_mc` (cross-die CERF).
   Per-test stimulus lives in the matching `tb_stimulus_*.svh`.
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion, the
   identity-aware per-edge tag allocator, and the CERF group allocator (both
@@ -444,14 +553,19 @@ Two layers, both self-contained in this repo:
 ```bash
 # RTL: compile + simulate one testbench (requires QuestaSim)
 make compile.log
-make sim-bingo_hw_manager_top.log           # or _tagged / _tagged_mc / _dep_matrix / _cerf_basic / _cerf_skip
+make sim_all                                # every testbench in TBS
+make sim-bingo_hw_manager_top.log           # or _tagged / _tagged_mc / _dep_matrix /
+                                            #    _cerf_basic / _cerf_skip / _cerf_mc /
+                                            #    _multiedge / _task_fetch
 
-# Python model + compiler tests (42 tests)
+# Python model + compiler tests (106 tests)
 make test-model                             # python3 -m pytest model/tests/ -v
 
-# Generated DFG-pattern tests and model-vs-RTL cross-validation
-make test-all-patterns
-make test-cross-validate
+# NOT USABLE AS SHIPPED: `make test-all-patterns` imports scripts/codegen/,
+# which is not in this repo, and `scripts/cross_validate.py` needs a model trace
+# and an RTL log passed explicitly (--model-trace / --rtl-log).
+# make test-all-patterns
+# make test-cross-validate
 
 # Dependency-sync gate as a standalone report
 python3 model/tests/test_dep_sync.py --seeds 20 --clusters 2

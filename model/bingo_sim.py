@@ -37,13 +37,28 @@ class SimConfig:
     push_interval: int = 5  # cycles between task pushes per chiplet
     random_seed: int = 0
     done_queue_mode: Literal["single", "per_core"] = "single"
+    # HOL STUDY KNOB. "inorder" is the RTL and the default; see
+    # ChipletModel._wq_candidate_indices for what the other two measure.
+    # HOW A CERF UPDATE REACHES OTHER CHIPLETS.
+    #   "global_instant" -- the historical model: one CERF, written on every
+    #       chiplet in the same cycle. NOT WHAT THE HARDWARE DOES. The RTL CERF
+    #       lives inside bingo_hw_manager_top and is written by a core on THAT
+    #       chiplet; there is no global register and no zero-latency broadcast.
+    #       Kept only to reproduce older numbers.
+    #   "separate_msg"  -- faithful naive: the update is its own message with its
+    #       own latency, unordered against the dep-set that releases the gated
+    #       task. This is what races.
+    #   "carried"       -- the proposal: the update rides inside the cross-chiplet
+    #       dep-set message, so it cannot arrive after the signal it gates.
+    cerf_scope: Literal["global_instant", "separate_msg", "carried"] = "global_instant"
+    # Extra 0..jitter cycles added to each cross-chiplet message, sampled
+    # independently per message. This is what exposes the ordering hazard.
+    h2h_latency_jitter: int = 0
     # Cycles without a task completing before run() calls it a deadlock. None = DERIVE it
     # from the workload, which is the only safe default: the detector cannot tell a hung
     # manager from a long task, so a fixed threshold silently reports a false deadlock on
-    # any graph whose longest task outlives it. A real FlashAttention decode graph has
-    # tasks of ~12,000 cycles against the old hardcoded 5,000, so it failed on a descriptor
-    # list the RTL executes correctly -- and a checker that vetoes correct graphs is worse
-    # than no checker. Derived = 4x the longest work_delay, floor 5,000.
+    # any graph whose longest task outlives it -- and a checker that vetoes correct
+    # graphs is worse than no checker. Derived = 4x the longest work_delay, floor 5,000.
     deadlock_threshold: Optional[int] = None
 
 
@@ -93,8 +108,21 @@ class BingoSimulator:
         self._completed_tasks: set[int] = set()
 
         # In-flight H2H messages:
-        #   (arrival_cycle, target_chiplet, source_core, target_cluster, dep_set_code, dep_set_tag)
-        self._h2h_inflight: list[tuple[int, int, int, int, int, Optional[int]]] = []
+        #   (arrival, target_chiplet, source_core, target_cluster, dep_set_code,
+        #    dep_set_tag, cerf_write_mask, cerf_controlled_mask)
+        self._h2h_inflight: list[tuple] = []
+        # In-flight standalone CERF updates (cerf_scope == "separate_msg" only):
+        #   (arrival, target_chiplet, write_mask, controlled_mask)
+        self._cerf_inflight: list[tuple] = []
+
+    def _h2h_arrival(self, cycle: int) -> int:
+        """Delivery cycle for one cross-chiplet message, sampled independently.
+
+        The jitter is what makes the ordering hazard reachable: two messages
+        leaving the same chiplet in the same cycle can arrive in either order.
+        """
+        j = self.config.h2h_latency_jitter
+        return cycle + self.config.h2h_latency + (self.rng.randint(0, j) if j else 0)
 
     def cerf_write_mask(self, chiplet_id: int, mask: int):
         """Write the full CERF bitmask for a specific chiplet."""
@@ -148,6 +176,7 @@ class BingoSimulator:
                         self._route_h2h(ev, cycle)
                     elif ev.event_type == "CERF_WRITE":
                         pending_cerf_masks.append((
+                            ev.chiplet_id,
                             ev.extra["cerf_write_mask"],
                             ev.extra["cerf_controlled_mask"],
                         ))
@@ -155,9 +184,21 @@ class BingoSimulator:
             # 3b. Apply deferred CERF writes (broadcast to all chiplets)
             # Deferred so CERF updates take effect next cycle, matching RTL timing.
             # Read-modify-write: only controlled groups are updated, others preserved.
-            for write_mask, controlled_mask in pending_cerf_masks:
-                for cid in self.chiplets:
-                    self.chiplets[cid].cerf_update(controlled_mask, write_mask)
+            for src_chip, write_mask, controlled_mask in pending_cerf_masks:
+                if self.config.cerf_scope == "global_instant":
+                    for cid in self.chiplets:
+                        self.chiplets[cid].cerf_update(controlled_mask, write_mask)
+                else:
+                    # The gating task runs on src_chip, so only THAT chiplet's
+                    # CERF is written directly -- which is what the RTL does.
+                    self.chiplets[src_chip].cerf_update(controlled_mask, write_mask)
+                    if self.config.cerf_scope == "separate_msg":
+                        # Naive: a second, independent message per remote chiplet.
+                        for cid in self.chiplets:
+                            if cid != src_chip:
+                                self._cerf_inflight.append(
+                                    (self._h2h_arrival(cycle), cid,
+                                     write_mask, controlled_mask))
 
             # 4. Check completion
             if self._completed_tasks == self._all_task_ids:
@@ -217,21 +258,42 @@ class BingoSimulator:
         source_core = event.extra["source_core"]
         broadcast = event.extra.get("broadcast", False)
 
-        arrival = cycle + self.config.h2h_latency
+        arrival = self._h2h_arrival(cycle)
+        cerf_w = event.extra.get("cerf_write_mask", 0)
+        cerf_c = event.extra.get("cerf_controlled_mask", 0)
+        if self.config.cerf_scope != "carried":
+            cerf_w = cerf_c = 0          # only "carried" rides the edge
 
         if broadcast:
             for cid in self.chiplets:
                 if cid != event.chiplet_id:
-                    self._h2h_inflight.append((arrival, cid, source_core, target_cluster, dep_set_code, dep_set_tag))
+                    self._h2h_inflight.append((self._h2h_arrival(cycle), cid, source_core, target_cluster, dep_set_code, dep_set_tag, cerf_w, cerf_c))
         else:
-            self._h2h_inflight.append((arrival, target_chiplet, source_core, target_cluster, dep_set_code, dep_set_tag))
+            self._h2h_inflight.append((arrival, target_chiplet, source_core, target_cluster, dep_set_code, dep_set_tag, cerf_w, cerf_c))
 
     def _deliver_h2h(self, cycle: int):
         """Deliver H2H messages that have arrived."""
+        # Standalone CERF updates (the naive "separate_msg" scope) -- their own
+        # message, their own latency, no ordering against the dep-set below.
+        still = []
+        for m in self._cerf_inflight:
+            arrival, target_chip, write_mask, controlled_mask = m
+            if cycle >= arrival:
+                self.chiplets[target_chip].cerf_update(controlled_mask, write_mask)
+            else:
+                still.append(m)
+        self._cerf_inflight = still
+
         remaining = []
         for msg in self._h2h_inflight:
-            arrival, target_chip, source_core, target_cluster, dep_set_code, dep_set_tag = msg
+            (arrival, target_chip, source_core, target_cluster, dep_set_code,
+             dep_set_tag, cerf_w, cerf_c) = msg
             if cycle >= arrival:
+                # CARRIED PREDICATE: apply the CERF update BEFORE the dep-set it
+                # rides with. One message, so the gated task can never see its
+                # dependency satisfied while its predicate is still stale.
+                if cerf_c:
+                    self.chiplets[target_chip].cerf_update(cerf_c, cerf_w)
                 self.chiplets[target_chip].receive_chiplet_dep_set(
                     source_core, target_cluster, dep_set_code, dep_set_tag
                 )

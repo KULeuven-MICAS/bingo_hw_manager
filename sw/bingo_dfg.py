@@ -29,6 +29,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         num_cores_per_cluster: int = BINGO_NUM_CORES_PER_CLUSTER,
         dep_tag_width: int = BINGO_DEP_TAG_WIDTH,
         task_desc_width: int = BINGO_TASK_DESC_WIDTH,
+        num_chiplets: int = MAX_NUM_CHIPLETS,
     ) -> None:
         super().__init__()
         self.id = 0
@@ -41,6 +42,34 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         self.num_cores_per_cluster = num_cores_per_cluster
         self.dep_tag_width = dep_tag_width
         self.task_desc_width = task_desc_width
+        # How many chiplets this DFG targets. The broadcast dep-set detection in
+        # bingo_transform_dfg_add_dummy_set_nodes needs the REAL count: assuming
+        # MAX_NUM_CHIPLETS there mis-classifies a point-to-point remote edge on a
+        # 2-chiplet part as a broadcast, and the RTL then multicasts to EVERY
+        # chiplet including the producer's own -- a stray tagged set with no
+        # consumer to drain it, i.e. a hang.
+        self.num_chiplets = num_chiplets
+        # MULTI-EDGE DEP OPS. False keeps the historical lowering: one set target
+        # and one check column per descriptor, every fan-in/fan-out split into
+        # extra dummy task descriptors. True lets ONE descriptor name a join --
+        # the dep matrix already AND-reduces dep_check_code atomically and only
+        # clears on a full match, so a multi-column check needs no RTL change;
+        # what it needs is a shared tag across the join's producers, which the
+        # tag allocator's general path provides. Off by default until the RTL
+        # regression has run against it.
+        # (B) MULTI-COLUMN CHECK: one descriptor checks every producer column
+        # of a join. Structurally safe on its own -- with (A) off each producer
+        # has exactly one consumer, so a tag group is {one consumer + its
+        # producers} and its edges occupy distinct cells by construction.
+        self.enable_multi_col_check = False
+        # (A) MULTI-ROW SET: one descriptor releases every consumer sharing a
+        # target (chiplet, cluster). This one MERGES tag groups -- a producer
+        # feeding several consumers links them, and the component can grow until
+        # two of its edges share a cell. The allocator rejects that (see
+        # bingo_transform_dfg_allocate_dep_tags), so leaving this off is safe and
+        # turning it on is checked, never silent.
+        self.enable_multi_row_set = False
+        self._stream_order_cache = None
     def bingo_add_node(self, node_obj: BingoNode) -> None:
         """Add a node to the DFG."""
 
@@ -74,6 +103,28 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         self.add_edge(from_node_obj, new_node_obj)
         # new_node → dst: inherit original edge attributes
         self.add_edge(new_node_obj, to_node_obj, **edge_data)
+
+    def bingo_insert_node_after(self, existing_node_obj: BingoNode, new_node_obj: BingoNode, successors_to_move: list[BingoNode] = None) -> None:
+        """Insert a new node after an existing node in the DFG."""
+        if successors_to_move is None:
+            successors_to_move = list(self.successors(existing_node_obj))
+
+        # Preserve edge attributes before removal
+        succ_edge_data = {}
+        for succ in successors_to_move:
+            succ_edge_data[succ] = dict(self[existing_node_obj][succ])
+
+        self.bingo_add_node(new_node_obj)
+
+        for succ in successors_to_move:
+            self.remove_edge(existing_node_obj, succ)
+
+        # existing → new_node: unconditional
+        self.add_edge(existing_node_obj, new_node_obj)
+
+        # new_node → successors: inherit original edge attributes
+        for succ in successors_to_move:
+            self.add_edge(new_node_obj, succ, **succ_edge_data[succ])
 
     def bingo_assert_no_cross_cluster_samecore_handoff(self) -> None:
         """Compile-time guard for the UNQUALIFIED (main-branch) HW dep matrix.
@@ -146,69 +197,147 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 if succ.assigned_chiplet_id == cur_node.assigned_chiplet_id
             ]
             if remote_succ_list:
-                # We have a special situation that this node is a broadcast node to set all chiplets
-                if len(set(remote_succ.assigned_chiplet_id for remote_succ in remote_succ_list)) == (MAX_NUM_CHIPLETS -1):
-                    # All the remote successors must have the same core id
-                    if len(set(remote_succ.assigned_core_id for remote_succ in remote_succ_list)) == 1:
-                        print(f"Node {cur_node.node_name} is a broadcast node to set all chiplets.")
+                # Group remote successors by target cluster and core. A broadcast
+                # dep-set has one (cluster, target_core, source_core) position
+                # replicated across chiplets, so mixing clusters in one group
+                # cannot be represented by a single dependency tag.
+                remote_succs_by_cluster_core: dict[tuple[int, int], list[BingoNode]] = {}
+                for remote_succ in remote_succ_list:
+                    key = (remote_succ.assigned_cluster_id, remote_succ.assigned_core_id)
+                    remote_succs_by_cluster_core.setdefault(key, []).append(remote_succ)
+
+                for (_cluster_id, core_id), group in remote_succs_by_cluster_core.items():
+                    chiplets_in_group = set(s.assigned_chiplet_id for s in group)
+                    # A genuine broadcast covers ALL other chiplets AND there are at
+                    # least two of them. The `num_chiplets > 2` guard is essential:
+                    # at num_chiplets==2 a single point-to-point remote edge trivially
+                    # "covers all (one) other chiplets" and would be mis-flagged as a
+                    # broadcast -> the RTL multicasts (AW=0xFF) to EVERY chiplet,
+                    # including the producer's own, leaving a stray (tagged) set with
+                    # no consumer to drain it. Such a single edge must use a targeted
+                    # dummy_set instead.
+                    if self.num_chiplets > 2 and len(chiplets_in_group) == (self.num_chiplets - 1):
+                        # Broadcast: one dummy_set blocks cur_node's core and sets the bit on all chiplets
+                        print(f"Node {cur_node.node_name} is a broadcast node to set all chiplets for core {core_id}.")
                         dummy_set_node = BingoNode(
                             assigned_chiplet_id=cur_node.assigned_chiplet_id,
                             assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
                             assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
-                            node_name=f"Chiplet_Dep_set_Broadcast{cur_node.node_name}"
+                            node_name=f"dummy_set_bcast_{cur_node.node_name}_co{core_id}"
                         )
                         dummy_set_node.node_type = "dummy"
                         dummy_set_node.dep_set_enable = True
-                        dummy_set_node.dep_set_list = [remote_succ_list[0].assigned_core_id]
-                        dummy_set_node.dep_set_cluster_id = remote_succ_list[0].assigned_cluster_id
-                        dummy_set_node.dep_set_chiplet_id = remote_succ_list[0].assigned_chiplet_id # should be fine since it is a broadcast type
+                        dummy_set_node.dep_set_list = [group[0].assigned_core_id]
+                        dummy_set_node.dep_set_cluster_id = group[0].assigned_cluster_id
+                        dummy_set_node.dep_set_chiplet_id = group[0].assigned_chiplet_id # should be fine since it is a broadcast type
                         dummy_set_node.dep_check_enable = False
                         dummy_set_node.dep_check_list = []
                         dummy_set_node.remote_dep_set_all = True
-                        # Add the dummy set node to the graph
-                        for remote_succ in remote_succ_list:
+                        # Add the dummy set node after cur_node for remote successors in this core group
+                        self.bingo_insert_node_after(cur_node, dummy_set_node, group)
+                    else:
+                        # Normal case: one dummy_set per remote successor
+                        for remote_succ in group:
+                            print(f"Adding dummy set node for {cur_node.node_name} to remote successor {remote_succ.node_name}")
+                            dummy_set_node = BingoNode(
+                                assigned_chiplet_id=cur_node.assigned_chiplet_id,
+                                assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
+                                assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
+                                node_name=f"dummy_set_{cur_node.node_name}_to_{remote_succ.node_name}"
+                            )
+                            dummy_set_node.node_type = "dummy"
+                            dummy_set_node.dep_set_enable = True
+                            dummy_set_node.dep_set_list = [remote_succ.assigned_core_id]
+                            dummy_set_node.dep_set_cluster_id = remote_succ.assigned_cluster_id
+                            dummy_set_node.dep_set_chiplet_id = remote_succ.assigned_chiplet_id
+                            dummy_set_node.dep_check_enable = False
+                            dummy_set_node.dep_check_list = []
+                            dummy_set_node.remote_dep_set_all = False
+                            # Add the dummy set node to the graph
                             self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
-                else:
-                    # Now the normal case
-                    for remote_succ in remote_succ_list:
-                        print(f"Adding dummy set node for {cur_node.node_name} to remote successor {remote_succ.node_name}")
-                        dummy_set_node = BingoNode(
-                            assigned_chiplet_id=cur_node.assigned_chiplet_id,
-                            assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
-                            assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
-                            node_name=f"dummy_set_{cur_node.node_name}_to_{remote_succ.node_name}"
-                        )
-                        dummy_set_node.node_type = "dummy"
-                        dummy_set_node.dep_set_enable = True
-                        dummy_set_node.dep_set_list = [remote_succ.assigned_core_id]
-                        dummy_set_node.dep_set_cluster_id = remote_succ.assigned_cluster_id
-                        dummy_set_node.dep_set_chiplet_id = remote_succ.assigned_chiplet_id
-                        dummy_set_node.dep_check_enable = False
-                        dummy_set_node.dep_check_list = []
-                        dummy_set_node.remote_dep_set_all = False
-                        # Add the dummy set node to the graph
-                        self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
-            if len(local_succ_list)>1:
+            if len(local_succ_list) > 1 and self.enable_multi_row_set:
+                # (A) MULTI-ROW SET. dep_set_code is already a bitmask over
+                # consumer ROWS, so ONE op releases every successor that shares a
+                # target (chiplet, cluster) -- only dep_set_cluster_id and
+                # dep_set_chiplet_id are scalar, so those are what actually force
+                # a split. Emit one op per distinct target group instead of one
+                # per successor.
+                # ONE PRESENCE BIT PER ROW. A row is a (cluster, core) pair, and
+                # a set writes a single bit there -- so two successors on the SAME
+                # row cannot share one op: the first to check drains the bit and
+                # the second starves. Partition each (chiplet, cluster) target
+                # into SLOTS, slot j taking the j-th successor of each core, so
+                # every op covers each row at most once. Successors that collide
+                # on a row land in different slots and therefore get different
+                # tags, exactly as the one-op-per-edge lowering gave them.
+                by_row: dict = {}
+                for succ in local_succ_list:
+                    by_row.setdefault(
+                        (succ.assigned_chiplet_id, succ.assigned_cluster_id,
+                         succ.assigned_core_id), []).append(succ)
+                groups: dict = {}
+                for (chip, cl, _co), row_succs in by_row.items():
+                    for slot, succ in enumerate(row_succs):
+                        groups.setdefault((chip, cl, slot), []).append(succ)
+                # Keep the group holding a same-core successor on cur_node's own
+                # descriptor (that edge is ordered by the core queue anyway);
+                # every other group becomes one dummy_set covering the WHOLE group.
+                keys = sorted(groups, key=lambda k: (
+                    not any(sc.assigned_core_id == cur_node.assigned_core_id
+                            for sc in groups[k]), k))
+                for gi, k in enumerate(keys[1:]):
+                    grp = groups[k]
+                    assert len({(sc.assigned_cluster_id, sc.assigned_core_id)
+                                for sc in grp}) == len(grp), (
+                        f"multi-row dep_set for {cur_node.node_name} would write "
+                        f"one presence bit for two consumers on the same row")
+                    dummy_set_node = BingoNode(
+                        assigned_chiplet_id=cur_node.assigned_chiplet_id,
+                        assigned_cluster_id=cur_node.assigned_cluster_id,
+                        assigned_core_id=cur_node.assigned_core_id,
+                        node_name=f"dummy_set_grp_{cur_node.node_name}_{gi}"
+                    )
+                    dummy_set_node.node_type = "dummy"
+                    dummy_set_node.dep_set_enable = True
+                    dummy_set_node.dep_set_list = sorted(
+                        {sc.assigned_core_id for sc in grp})
+                    dummy_set_node.dep_set_chiplet_id = k[0]
+                    dummy_set_node.dep_set_cluster_id = k[1]
+                    dummy_set_node.dep_check_enable = False
+                    dummy_set_node.dep_check_list = []
+                    dummy_set_node.remote_dep_set_all = False
+                    self.bingo_insert_node_after(cur_node, dummy_set_node, grp)
+            elif len(local_succ_list) > 1:
                 # Now the local multiple successor case
                 # We need local_successors-1 dummy set nodes
                 print(f"Adding dummy set nodes for {cur_node.node_name} with local successors {[succ.node_name for succ in local_succ_list]}")
-                for i in range(len(local_succ_list)-1):
+
+                # Prioritize edges where the successor node has the same assigned core as cur_node
+                prioritized_indices = [i for i, succ in enumerate(local_succ_list)
+                                      if succ.assigned_core_id == cur_node.assigned_core_id]
+                other_indices = [i for i in range(len(local_succ_list)) if i not in prioritized_indices]
+                # Combine prioritized first, then others
+                ordered_indices = prioritized_indices + other_indices
+
+                # Only need local_successors-1 dummy set nodes
+                for idx in ordered_indices[:len(local_succ_list)-1]:
+                    succ = local_succ_list[idx]
                     dummy_set_node = BingoNode(
                         assigned_chiplet_id=cur_node.assigned_chiplet_id,
                         assigned_cluster_id=cur_node.assigned_cluster_id,      # must be the same type of the cur_node to block the execution
                         assigned_core_id=cur_node.assigned_core_id,            # must be the same type of the cur_node to block the execution
-                        node_name=f"dummy_set_{cur_node.node_name}_{i}"
+                        node_name=f"dummy_set_{cur_node.node_name}_{idx}"
                     )
                     dummy_set_node.node_type = "dummy"
                     dummy_set_node.dep_set_enable = True
-                    dummy_set_node.dep_set_list = [local_succ_list[i].assigned_core_id]
-                    dummy_set_node.dep_set_cluster_id = local_succ_list[i].assigned_cluster_id
-                    dummy_set_node.dep_set_chiplet_id = local_succ_list[i].assigned_chiplet_id
+                    dummy_set_node.dep_set_list = [succ.assigned_core_id]
+                    dummy_set_node.dep_set_cluster_id = succ.assigned_cluster_id
+                    dummy_set_node.dep_set_chiplet_id = succ.assigned_chiplet_id
                     dummy_set_node.dep_check_enable = False
                     dummy_set_node.dep_check_list = []
                     dummy_set_node.remote_dep_set_all = False
                     # Add the dummy set node to the graph
-                    self.bingo_insert_node_between(cur_node, local_succ_list[i], dummy_set_node)
+                    self.bingo_insert_node_between(cur_node, succ, dummy_set_node)
                     
     def bingo_transform_dfg_add_dummy_check_nodes(self) -> None:
         '''Transform the DFG to add dummy check nodes.
@@ -276,7 +405,17 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             # Distinct core_ids from the remaining non-dummy predecessors
             remaining_core_ids = sorted(set(pred.assigned_core_id for pred in remaining_preds))
 
-            if len(remaining_core_ids) >= 2:
+            if len(remaining_core_ids) >= 2 and self.enable_multi_col_check:
+                # (B) MULTI-COLUMN CHECK. One descriptor checks every producer
+                # column at once. The matrix check is all-or-nothing -- a check
+                # that cannot pass consumes nothing -- so the partially-arrived
+                # column is left intact for the retry and no deadlock window
+                # exists. (The historical justification for splitting here cited
+                # "dep_matrix overlap detection", which was removed with the
+                # counter matrix: dep_set_ready_o is now unconditionally 1.)
+                print(f"Multi-column dep_check for {cur_node.node_name}: "
+                      f"cores {remaining_core_ids} in ONE op")
+            elif len(remaining_core_ids) >= 2:
                 # Keep only the LAST core as cur_node's direct predecessor.
                 # Insert dummy_checks for all other cores so each dep_check
                 # checks exactly one core column.
@@ -305,6 +444,124 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     dummy_check_node.dep_set_chiplet_id = 0
                     dummy_check_node.remote_dep_set_all = False
                     self.bingo_insert_node_between(pred, cur_node, dummy_check_node)
+
+    def bingo_transform_add_core_sequencing_edges(self) -> int:
+        """Add edges between consecutive tasks on the same core.
+
+        Ensures deterministic execution order for tasks sharing a core,
+        even when no explicit data dependency exists between them.
+        Without these edges, the HW scheduler could dispatch same-core
+        tasks in any topological order, leading to non-deterministic
+        behavior and harder-to-debug timing.
+
+        Algorithm:
+          1. Topologically sort all nodes (respects existing dependencies).
+          2. Group by (chiplet_id, cluster_id, core_id).
+          3. Within each group, add an edge from node[i] to node[i+1]
+             if no path already connects them (avoids redundant edges).
+
+        Must be called AFTER entry/exit/conditional/dummy transforms
+        (which insert infrastructure nodes on specific cores) and
+        BEFORE dep info assignment.
+
+        Returns:
+            Number of sequencing edges added.
+        """
+        from collections import defaultdict
+
+        topo_order = list(nx.topological_sort(self))
+
+        # Group nodes by their (chiplet, cluster, core) assignment
+        core_groups: dict[tuple, list[BingoNode]] = defaultdict(list)
+        for node in topo_order:
+            key = (node.assigned_chiplet_id, node.assigned_cluster_id, node.assigned_core_id)
+            core_groups[key].append(node)
+
+        edges_added = 0
+        for (chip, cl, core), nodes in core_groups.items():
+            # nodes are already in topological order
+            for i in range(len(nodes) - 1):
+                prev_node = nodes[i]
+                next_node = nodes[i + 1]
+                # Skip if an edge (direct or transitive path) already exists
+                if not self.has_edge(prev_node, next_node) and not nx.has_path(self, prev_node, next_node):
+                    self.add_edge(prev_node, next_node)
+                    edges_added += 1
+
+        if edges_added > 0:
+            print(f"Core sequencing: added {edges_added} edges across "
+                  f"{len(core_groups)} core groups")
+        return edges_added
+
+    def bingo_stream_order(self, chiplet_id: int | None = None) -> list:
+        """The ONE per-core order the manager will actually see, used by everything.
+
+        The manager fetches the descriptor list in order and demuxes each entry into its
+        assigned core's FIFO waiting queue, so this list IS the per-core execution order.
+        Two things must agree on it:
+
+          * the dep-tag allocator, whose min chain-cover decides which edges may SHARE a
+            tag from a happens-before order that includes same-core sequencing;
+          * this emitter.
+
+        They are not independent. Emitting an order the allocator did not assume can leave
+        two simultaneously-live edges holding one tag, and the run deadlocks. The converse
+        holds as well: strip the tags and even the plain topological order deadlocks. The
+        tags are what make a particular order safe, so the order and the tags have to be
+        derived from the same sequence -- which is why this is computed once, here.
+
+        The order is a PRIORITY topological sort: always a valid topological order, but
+        among the currently-ready nodes it prefers the one anchored earliest, so a dummy
+        lands next to the real task it serves. That placement matters because a dummy
+        occupies a slot in the CONSUMER's waiting queue: a plain topological sort can put
+        one belonging to a later task ahead of an earlier one, and the FIFO then makes the
+        earlier task inherit a wait it has no dependency on.
+        """
+        if getattr(self, "_stream_order_cache", None) is not None:
+            seq = self._stream_order_cache
+            return ([n for n in seq if n.assigned_chiplet_id == chiplet_id]
+                    if chiplet_id is not None else seq)
+
+        import heapq
+        topo_nodes = list(nx.topological_sort(self))
+        pos = {n: i for i, n in enumerate(topo_nodes)}
+
+        def _anchor(node):
+            seen, cur, side = set(), node, 1
+            while cur.node_type == "dummy" and cur.node_id not in seen:
+                seen.add(cur.node_id)
+                if cur.dep_check_enable:
+                    nxt, side = list(self.successors(cur)), 0    # a check gates its consumer
+                elif cur.dep_set_enable:
+                    nxt, side = list(self.predecessors(cur)), 2  # a set follows its producer
+                else:
+                    break
+                if not nxt:
+                    break
+                cur = min(nxt, key=lambda x: pos[x])
+            return pos.get(cur, pos[node]), side
+
+        def _key(node):
+            if node.node_type == "dummy":
+                a, side = _anchor(node)
+                return (a, side, pos[node])
+            return (pos[node], 1, 0)
+
+        indeg = {n: self.in_degree(n) for n in self.nodes()}
+        ready = [(_key(n), i, n) for i, n in enumerate(topo_nodes) if indeg[n] == 0]
+        heapq.heapify(ready)
+        seq, tie = [], len(topo_nodes)
+        while ready:
+            _, _, n = heapq.heappop(ready)
+            seq.append(n)
+            for succ in self.successors(n):
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    heapq.heappush(ready, (_key(succ), tie, succ)); tie += 1
+        assert len(seq) == len(topo_nodes), "priority topological sort dropped nodes"
+        self._stream_order_cache = seq
+        return ([n for n in seq if n.assigned_chiplet_id == chiplet_id]
+                if chiplet_id is not None else seq)
 
     def bingo_assign_normal_node_dep_check_info(self) -> None:
         """Assign the dep check info for normal and gating nodes."""
@@ -344,7 +601,30 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                     succ for succ in self.successors(cur_node)
                     if not (succ.node_type == "dummy" and succ.dep_set_enable)
                 ]
-                if len(succs)>1:
+                if len(succs) > 1 and self.enable_multi_row_set:
+                    # (A) one multi-row set op. The dummy-set pass already split
+                    # every OTHER target (chiplet, cluster) off, so what is left
+                    # must share one -- assert it rather than silently emitting a
+                    # set aimed at the wrong cluster.
+                    targets = {(sc.assigned_chiplet_id, sc.assigned_cluster_id)
+                               for sc in succs}
+                    assert len(targets) == 1, (
+                        f"multi-row dep_set for {cur_node.node_name} spans "
+                        f"{targets}; the dummy-set pass should have split these")
+                    rows = [(sc.assigned_cluster_id, sc.assigned_core_id)
+                            for sc in succs]
+                    assert len(set(rows)) == len(rows), (
+                        f"multi-row dep_set for {cur_node.node_name} targets the "
+                        f"same row twice ({rows}) -- one presence bit cannot "
+                        f"release two consumers")
+                    chip, cl = targets.pop()
+                    cur_node.dep_set_enable = True
+                    cur_node.dep_set_list = sorted(
+                        {sc.assigned_core_id for sc in succs})
+                    cur_node.remote_dep_set_all = False
+                    cur_node.dep_set_chiplet_id = chip
+                    cur_node.dep_set_cluster_id = cl
+                elif len(succs)>1:
                     print(f"Warning: More than one local successor for node {cur_node.node_name}. This is not expected, go back to DFG transformation stage!")
                 elif len(succs)==1:
                     cur_node.dep_set_enable = True
@@ -391,33 +671,55 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         if tag_width is None:
             tag_width = self.dep_tag_width
         max_tags = 1 << tag_width
-        topo = list(nx.topological_sort(self))
+        # MUST be the same order the emitter uses. Allocating tags against
+        # nx.topological_sort while the emitters walked a DIFFERENT per-core order
+        # (_core_balanced_topological_sort) is how two simultaneously-live edges
+        # end up sharing one tag -- the run then deadlocks with no visible tag
+        # mismatch to catch it. One order, derived once. See bingo_stream_order.
+        topo = self.bingo_stream_order()
         pos = {n: i for i, n in enumerate(topo)}
 
         # 1. Collect dep-matrix set/check edges, grouped by physical cell.
         cells: dict = {}                      # (chip, cl, R, C) -> [(set_node, check_node), ...]
-        set_edge_count: dict = {}             # set_node -> number of edges it drives
-        check_edge_count: dict = {}           # check_node -> number of edges it drains
+        pairs: list = []                      # (set_node, check_node, cell)
         for u, v in self.edges():
             if not (u.dep_set_enable and v.dep_check_enable):
                 continue
             C, R = u.assigned_core_id, v.assigned_core_id
             if C not in v.dep_check_list or R not in u.dep_set_list:
                 continue                      # u sets / v checks, but not THIS pair
-            cells.setdefault((v.assigned_chiplet_id, v.assigned_cluster_id, R, C),
-                             []).append((u, v))
-            set_edge_count[u] = set_edge_count.get(u, 0) + 1
-            check_edge_count[v] = check_edge_count.get(v, 0) + 1
+            cell = (v.assigned_chiplet_id, v.assigned_cluster_id, R, C)
+            cells.setdefault(cell, []).append((u, v))
+            pairs.append((u, v, cell))
 
-        # A node driving/draining >1 edge would need >1 tag (only true broadcast
-        # dep-sets do this today). Tagging those needs a shared reserved tag per
-        # broadcast group -- not yet implemented; fail loudly instead of guessing.
-        multi = [n.node_name for n, c in set_edge_count.items() if c > 1] + \
-                [n.node_name for n, c in check_edge_count.items() if c > 1]
-        if multi:
-            raise NotImplementedError(
-                "dep-tag allocation: multi-target set/check ops (e.g. broadcast "
-                f"dep_set) need shared reserved tags; not yet supported: {multi}")
+        # TAG GROUPS. A descriptor carries ONE dep_set_tag and ONE dep_check_tag,
+        # and every set->check edge requires u.dep_set_tag == v.dep_check_tag. So
+        # the tag is a property of the NODE, and any set/check ops linked by an
+        # edge must agree: a "tag group" is a connected component of the
+        # set-node <-> check-node bipartite graph. Today almost every group is a
+        # single edge touching a single cell. A broadcast dep_set, or (once the
+        # descriptor carries a mask) a multi-column join / multi-row fan-out, is
+        # a group spanning several cells that must hold ONE tag in all of them.
+        bip = nx.Graph()
+        for su, cv, _cell in pairs:
+            bip.add_edge(("S", su), ("C", cv))
+        gid = {}
+        n_groups = 0
+        for i, comp in enumerate(nx.connected_components(bip)):
+            for key in comp:
+                gid[key] = i
+            n_groups = i + 1
+
+        setters: dict = {}
+        drainers: dict = {}
+        cells_of: dict = {}
+        edges_of: dict = {}
+        for su, cv, cell in pairs:
+            gi = gid[("S", su)]
+            setters.setdefault(gi, set()).add(su)
+            drainers.setdefault(gi, set()).add(cv)
+            cells_of.setdefault(gi, set()).add(cell)
+            edges_of.setdefault(gi, []).append((su, cv))
 
         # Same-core HOL reachability: at runtime each core dispatches its tasks in
         # topological (= push) order, so a same-core node that comes later is
@@ -437,67 +739,151 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             for i in range(len(seq) - 1):
                 hb.add_edge(seq[i], seq[i + 1])
 
-        # 2. Per cell: assign the MINIMUM number of tags via a minimum chain
-        #    partition of the edges under the happens-before partial order.
+        _desc: dict = {}
+
+        def _descendants(n):
+            if n not in _desc:
+                _desc[n] = nx.descendants(hb, n)
+            return _desc[n]
+
+        def _precedes(a, b):
+            """Group a may hand its tag on to b: every drain of a happens-before
+            every set of b. They may meet at one node (a's consumer IS b's
+            producer -- a node dispatches/drains before it completes/sets)."""
+            for cv in drainers[a]:
+                for su in setters[b]:
+                    if cv is not su and su not in _descendants(cv):
+                        return False
+            return True
+
+        # INVARIANT: a tag group holds ONE tag, and a cell holds ONE presence
+        # bit per tag. So two edges of the same group may land in the same cell
+        # only if they are ORDERED -- otherwise the first consumer to check
+        # drains the single bit and the second starves forever, silently.
+        # Merging ops (multi-row set / multi-column check) links groups
+        # transitively through shared producers, and a big enough component will
+        # eventually fold two concurrent edges onto one cell. Catch it here: a
+        # compile error naming the two edges beats a hang in silicon.
+        for gi in range(n_groups):
+            per_cell: dict = {}
+            for (su, cv) in edges_of[gi]:
+                cell = (cv.assigned_chiplet_id, cv.assigned_cluster_id,
+                        cv.assigned_core_id, su.assigned_core_id)
+                per_cell.setdefault(cell, []).append((su, cv))
+            for cell, el in per_cell.items():
+                for a in range(len(el)):
+                    for b in range(a + 1, len(el)):
+                        (sa, ca), (sb, cb) = el[a], el[b]
+                        fwd = (sb is ca) or (sb in _descendants(ca))
+                        bwd = (sa is cb) or (sa in _descendants(cb))
+                        if not fwd and not bwd:
+                            raise ValueError(
+                                "dep-tag allocation: tag group would put TWO "
+                                f"concurrently-live edges on cell {cell}, which "
+                                "is one presence bit -- the first consumer to "
+                                "check would drain it and the second would hang."
+                                f"\n  edge A: {sa.node_name} -> {ca.node_name}"
+                                f"\n  edge B: {sb.node_name} -> {cb.node_name}"
+                                "\n  cell = (chiplet, cluster, consumer core, "
+                                "producer core)\n  These two ops must not be "
+                                "merged into one descriptor; split them (that is "
+                                "what enable_multi_row_set=False does).")
+
+        # FAST PATH -- every group is one edge in one cell, which is what the
+        # dummy passes guarantee today. Per cell the conflict graph is the
+        # incomparability graph of a partial order, so by Dilworth the minimum
+        # number of tags is the largest antichain, and a min chain cover
+        # (bipartite matching) attains it EXACTLY. Keep using it: it is optimal,
+        # and it is the path every existing graph takes, so nothing moves.
+        single_edge = all(len(edges_of[g]) == 1 and len(cells_of[g]) == 1
+                          for g in range(n_groups))
+        if single_edge:
+            for key, edges in cells.items():
+                edges.sort(key=lambda e: (pos[e[0]], pos[e[1]]))
+                n = len(edges)
+                reach = [_descendants(cv) for (_su, cv) in edges]
+                B = nx.Graph()
+                for a in range(n):
+                    B.add_node(("L", a)); B.add_node(("R", a))
+                for a in range(n):
+                    for b in range(n):
+                        if a == b:
+                            continue
+                        if edges[b][0] is edges[a][1] or edges[b][0] in reach[a]:
+                            B.add_edge(("L", a), ("R", b))
+                match = (nx.algorithms.bipartite.hopcroft_karp_matching(
+                             B, top_nodes=[("L", a) for a in range(n)])
+                         if B.number_of_edges() else {})
+                succ, has_pred = {}, set()
+                for node, m in match.items():
+                    if node[0] == "L":
+                        succ[node[1]] = m[1]; has_pred.add(m[1])
+                tag_of, n_chains = {}, 0
+                for a in range(n):
+                    if a in has_pred:
+                        continue                       # not a chain head
+                    cur = a
+                    while True:
+                        tag_of[cur] = n_chains
+                        if cur in succ:
+                            cur = succ[cur]
+                        else:
+                            break
+                    n_chains += 1
+                if n_chains > max_tags:
+                    raise ValueError(
+                        f"dep-tag allocation: cell {key} needs {n_chains} > {max_tags} "
+                        f"concurrent tags (tag_width={tag_width}); reduce this cell's "
+                        f"concurrency in placement or widen DepTagWidth.")
+                for i, (su, cv) in enumerate(edges):
+                    su.dep_set_tag = tag_of[i]
+                    cv.dep_check_tag = tag_of[i]
+            return
+
+        # GENERAL PATH -- some group spans several edges or several cells (a
+        # broadcast dep_set, or a multi-edge op). Tags are no longer independent
+        # per cell: the group needs one tag free in EVERY cell it touches, so
+        # this is a graph colouring. Conflict edges exist only between groups
+        # that share a cell AND are incomparable, which is why two groups in
+        # disjoint cells can still reuse the same tag.
         #
-        #    Edge a strictly precedes edge b (a may share b's tag) iff a's CONSUMER
-        #    drains before b's PRODUCER sets: has_path(consumerA, producerB). Two
-        #    edges can share a tag iff they are comparable under this order (one
-        #    precedes the other) -- so a "tag class" is a CHAIN. The conflict graph
-        #    (incomparable edges) is the incomparability graph of a partial order,
-        #    which is perfect; by Dilworth the minimum #chains == the largest
-        #    antichain == the max number of simultaneously-live edges. Greedy
-        #    coloring is NOT optimal here, but min-chain-cover (bipartite matching)
-        #    is -- so it uses exactly the max antichain (the fewest tags any
-        #    correct assignment could), fitting 2**tag_width whenever the workload
-        #    keeps a cell's concurrency within that bound (it raises otherwise).
-        for key, edges in cells.items():
-            edges.sort(key=lambda e: (pos[e[0]], pos[e[1]]))
-            n = len(edges)
-            # reach[a] = nodes reachable from edge a's consumer (its drain point) in
-            # the same-core-augmented graph -- so DFG paths AND same-core HOL order.
-            reach = [nx.descendants(hb, cv) for (_su, cv) in edges]
-            # a precedes b (may share a tag) iff edge a's drain happens-before edge
-            # b's set: they meet at one node (a's consumer IS b's producer -- a node
-            # dispatches/drains before it completes/sets), or b's producer is
-            # reachable from a's consumer (DFG path or same-core HOL order).
-            B = nx.Graph()
-            for a in range(n):
-                B.add_node(("L", a)); B.add_node(("R", a))
-            for a in range(n):
-                for b in range(n):
-                    if a == b:
-                        continue
-                    if edges[b][0] is edges[a][1] or edges[b][0] in reach[a]:
-                        B.add_edge(("L", a), ("R", b))
-            match = (nx.algorithms.bipartite.hopcroft_karp_matching(
-                         B, top_nodes=[("L", a) for a in range(n)])
-                     if B.number_of_edges() else {})
-            succ, has_pred = {}, set()
-            for node, m in match.items():
-                if node[0] == "L":
-                    succ[node[1]] = m[1]; has_pred.add(m[1])
-            tag_of, n_chains = {}, 0
-            for a in range(n):
-                if a in has_pred:
-                    continue                       # not a chain head
-                cur = a
-                while True:
-                    tag_of[cur] = n_chains
-                    if cur in succ:
-                        cur = succ[cur]
-                    else:
-                        break
-                n_chains += 1
-            if n_chains > max_tags:
-                raise ValueError(
-                    f"dep-tag allocation: cell {key} needs {n_chains} > {max_tags} "
-                    f"concurrent tags (tag_width={tag_width}); reduce this cell's "
-                    f"concurrency in placement or widen DepTagWidth.")
-            # 3. Stamp the tag on both endpoints of each edge.
-            for i, (su, cv) in enumerate(edges):
-                su.dep_set_tag = tag_of[i]
-                cv.dep_check_tag = tag_of[i]
+        # Merging edges into multi-edge ops tends to LOWER tag pressure rather
+        # than raise it, because the merged edges share one tag instead of one
+        # each. DSATUR is not provably optimal on this subgraph, so the capacity
+        # check below stays.
+        import itertools as _it
+        groups_in_cell: dict = {}
+        for gi, cs in cells_of.items():
+            for cell in cs:
+                groups_in_cell.setdefault(cell, []).append(gi)
+        H = nx.Graph()
+        H.add_nodes_from(range(n_groups))
+        for cell, gs in groups_in_cell.items():
+            for a, b in _it.combinations(gs, 2):
+                if not _precedes(a, b) and not _precedes(b, a):
+                    H.add_edge(a, b)
+        colour = nx.coloring.greedy_color(H, strategy="DSATUR")
+        n_tags = (max(colour.values()) + 1) if colour else 0
+        if n_tags > max_tags:
+            busiest = max(groups_in_cell.items(),
+                          key=lambda kv: len(kv[1]))
+            detail = "\n".join(
+                f"    group {g}: " + ", ".join(
+                    f"{su.node_name}->{cv.node_name}" for su, cv in edges_of[g][:3])
+                + (f" (+{len(edges_of[g]) - 3} more)" if len(edges_of[g]) > 3 else "")
+                for g in sorted(busiest[1])[:8])
+            raise ValueError(
+                f"dep-tag allocation: needs {n_tags} > {max_tags} tags "
+                f"(tag_width={tag_width}).\n"
+                f"  cell = (chiplet, cluster, consumer core, producer core)\n"
+                f"  busiest cell {busiest[0]} holds {len(busiest[1])} groups:\n{detail}\n"
+                f"  Fix by serializing those producers against each other (an edge "
+                f"between them lets two groups share a tag), or widen DepTagWidth "
+                f"-- the descriptor carries TWO tags, so each step up costs 2 bits.")
+        for su, cv, _cell in pairs:
+            t = colour[gid[("S", su)]]
+            su.dep_set_tag = t
+            cv.dep_check_tag = t
 
     # ----------------------------------------------------------------
     # DARTS Tier 1: Conditional Execution helpers
@@ -1317,7 +1703,15 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         return "\n\n".join(sv_strings)
 
     def _core_balanced_topological_sort(self, chiplet_id: int) -> list:
-        """Topological sort that interleaves tasks across cores.
+        """SUPERSEDED by bingo_stream_order -- kept only for comparison.
+
+        Do NOT use this to emit a descriptor list. The dep-tag allocator derives
+        its happens-before order from bingo_stream_order, and emitting a
+        different per-core order than the one tags were allocated against can
+        leave two simultaneously-live edges sharing a tag, which deadlocks with
+        nothing visible to catch it. One order, derived once.
+
+        Topological sort that interleaves tasks across cores.
 
         The standard topological sort may dump many tasks for the same core
         consecutively (e.g., a task + its dummy_set/check children). This
@@ -1418,7 +1812,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         sv_strings = []
         # Iterate over each chiplet
         for chiplet_id in range(MAX_NUM_CHIPLETS):
-            chiplet_nodes = self._core_balanced_topological_sort(chiplet_id)
+            chiplet_nodes = self.bingo_stream_order(chiplet_id)
             if not chiplet_nodes:
                 continue  # Skip this chiplet if no nodes exist
 
@@ -1464,7 +1858,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
             f"{BINGO_TASK_DESC_WORD_WIDTH}-bit words per descriptor, LSW first, "
             f"stride {self.bingo_task_desc_bytes()} B"
         ]
-        for node in self._core_balanced_topological_sort(chiplet_id):
+        for node in self.bingo_stream_order(chiplet_id):
             lines.append(f"// task {node.node_id}: {node.node_name}")
             for word in self.bingo_pack_node_words(node):
                 lines.append(f"{word:0{digits}x}")

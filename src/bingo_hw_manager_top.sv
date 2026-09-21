@@ -23,6 +23,18 @@ module bingo_hw_manager_top #(
     // per-edge tags are plumbed to the tagged dep-matrix scoreboard so a
     // consumer drains only ITS producer's increment (no counter-sharing hazard).
     parameter int unsigned DepTagWidth = 4,
+    /// CROSS-DIE CERF WINDOW: the low GlobalCerfGroups CERF entries ride inside
+    /// cross-chiplet dep-set messages, so a gating task on one die can gate work
+    /// on another. Must be >= 1; a design with no cross-die conditionals simply
+    /// never allocates groups in the window.
+    ///
+    /// Locally CERF is race-free structurally -- a gated task depends on its
+    /// gating task, so the dependency edge orders the CERF write against the
+    /// read. A predicate sent as its OWN message loses that ordering and the
+    /// remote task can see its dependency satisfied with a stale bit, silently
+    /// skipping selected work. Carrying it on the edge restores the ordering by
+    /// construction. See model/tests/test_multi_chiplet_cerf.py.
+    parameter int unsigned GlobalCerfGroups = 8,
     /// Width of the task-descriptor CONTAINER, in bits.
     ///
     /// This used to be implicit: the descriptor was whatever fitted in one HostAxiLiteDataWidth
@@ -54,6 +66,11 @@ module bingo_hw_manager_top #(
     parameter type csr_rsp_t = logic,
     // FIFO Depths
     parameter int unsigned TaskQueueDepth = 32,
+    /// AXI-Lite reads the master-mode task queue may keep in flight
+    /// (TASK_QUEUE_TYPE == 1 only; see bingo_hw_manager_task_queue_master).
+    /// 1 is the strictly-serial behaviour and the default, so raising it is
+    /// opt-in. Must be >= 1 and <= TaskQueueDepth.
+    parameter int unsigned TaskQueueMaxOutstanding = 1,
     // Per-core waiting-dep-check queue. It was the one queue in this module fixed at a
     // literal while its siblings were parameters, and it is the one the stream demux
     // backpressures on: `stream_demux_core_type_oup_ready[core] = !waiting_..._full[core]`
@@ -61,10 +78,7 @@ module bingo_hw_manager_top #(
     // is worth being able to sweep. The Python model in model/ already treats it as a
     // parameter (QueueDepths.waiting), so this makes the RTL and the model agree.
     //
-    // Measured on fa_decode_4cluster (437 descriptors, 4 clusters): raising it 8 -> 32
-    // changes nothing (57,719 -> 57,679 model cycles, 0.07%). The descriptor stream on
-    // that graph is not limited by this queue. Kept parameterised for the next graph that
-    // is, not as a performance fix.
+    // Parameterised so it can be swept, not because the default is a bottleneck.
     parameter int unsigned WaitingDepCheckQueueDepth = 8,
     parameter int unsigned ChipletDoneQueueDepth = 32,
     parameter int unsigned DoneQueueDepth = 32,
@@ -268,6 +282,11 @@ module bingo_hw_manager_top #(
     /// It is checked at elaboration to fit in a single beat, which is what keeps it atomic no
     /// matter how wide the descriptor grows.
     typedef struct packed{
+        /// Carried predicate: set only by a GATING task's message. Carries that
+        /// die's global CERF window so the receiver applies the routing decision
+        /// together with the dep-set that releases the gated task.
+        logic                                      cerf_valid;
+        logic [GlobalCerfGroups-1:0]               cerf_global;
         bingo_hw_manager_task_id_t                 task_id;             // trace only, not consumed
         bingo_hw_manager_dep_tag_t                 dep_set_tag;
         bingo_hw_manager_dep_code_t                dep_set_code;
@@ -285,6 +304,8 @@ module bingo_hw_manager_top #(
     end
     typedef struct packed{
         logic [ReservedBitsForChipletMsg-1:0]      reserved_bits;
+        logic                                      cerf_valid;
+        logic [GlobalCerfGroups-1:0]               cerf_global;
         bingo_hw_manager_task_id_t                 task_id;
         bingo_hw_manager_dep_tag_t                 dep_set_tag;
         bingo_hw_manager_dep_code_t                dep_set_code;
@@ -619,6 +640,7 @@ module bingo_hw_manager_top #(
         // Hence this is a master AXI Lite interface
         bingo_hw_manager_task_queue_master #(
             .TaskQueueDepth               (TaskQueueDepth               ),
+            .MaxOutstanding               (TaskQueueMaxOutstanding      ),
             .TaskIdWidth                  (TaskIdWidth                  ),
             .req_lite_t                   (host_axi_lite_req_t          ),
             .resp_lite_t                  (host_axi_lite_resp_t         ),
@@ -674,6 +696,7 @@ module bingo_hw_manager_top #(
     /////////////////////////////////////////////////////////       
     bingo_hw_manager_chiplet_dep_set #(
         .bingo_hw_manager_chiplet_msg_t   (bingo_hw_manager_chiplet_msg_full_t),
+        .GlobalCerfGroups                             (GlobalCerfGroups       ),
         .ChipIdWidth                                  (ChipIdWidth            ),
         .HostAxiLiteAddrWidth                         (HostAxiLiteAddrWidth   ),
         .HostAxiLiteDataWidth                         (HostAxiLiteDataWidth   ),
@@ -686,6 +709,7 @@ module bingo_hw_manager_top #(
         .chiplet_mailbox_base_addr_i       (chiplet_mailbox_base_addr_i        ),
         .to_remote_chiplet_axi_lite_req_o  (to_remote_chiplet_axi_lite_req_o   ),
         .to_remote_chiplet_axi_lite_resp_i (to_remote_chiplet_axi_lite_resp_i  ),
+        .cerf_global_state_i               (cerf_state[GlobalCerfGroups-1:0]   ),
         .chiplet_dep_set_task_desc_i       (chiplet_dep_set_task_desc          ),
         .chiplet_dep_set_task_desc_valid_i (chiplet_dep_set_task_desc_valid    ),
         .chiplet_dep_set_task_desc_ready_o (chiplet_dep_set_task_desc_ready    )
@@ -755,6 +779,15 @@ module bingo_hw_manager_top #(
     );
     assign cur_chiplet_done_queue_msg = bingo_hw_manager_chiplet_msg_full_t'(chiplet_done_queue_mbox_data);
     assign chiplet_done_queue_mbox_pop =  stream_arbiter_dep_matrix_set_inp_ready[NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET] && !chiplet_done_queue_mbox_empty;
+
+    /// Carried predicate, receive side: the window is written in the SAME cycle
+    /// the message's dep-set is granted, so both land on one clock edge and a
+    /// consumer released by that set already sees the new predicate.
+    logic [GlobalCerfGroups-1:0] cerf_global_write_data;
+    logic                        cerf_global_write_en;
+    assign cerf_global_write_en   = chiplet_done_queue_mbox_pop
+                                 && cur_chiplet_done_queue_msg.cerf_valid;
+    assign cerf_global_write_data = cur_chiplet_done_queue_msg.cerf_global;
     //////////////////////////////////////////////////////////////////////
     // Stream demux core type
     //////////////////////////////////////////////////////////////////////
@@ -765,10 +798,8 @@ module bingo_hw_manager_top #(
     // core shared ONE in-order dep-check stream: cluster 3's GEMM task could not be checked
     // before cluster 0's, even when cluster 3's dependency was met first and cluster 0's was
     // not. With one cluster that costs nothing -- in-order is what a single core wants. With
-    // four it serialises every cluster behind the other three, and it is the dominant term in
-    // the 4-cluster FlashAttention decode: measured over 133 dispatches, ZERO grants occurred
-    // out of task-list order across clusters, and grant latency went from 20 cc (one shard
-    // active) to 3,100-3,750 cc (four).
+    // four it serialises every cluster behind the other three, which dominates grant latency
+    // on a multi-shard graph.
     //
     // Splitting the lane per (core, cluster) gives each cluster's stream the independence the
     // ready queues already had. The per-cluster demuxes that used to sit AFTER the dep check
@@ -1422,7 +1453,9 @@ module bingo_hw_manager_top #(
         .rst_ni           ( rst_ni                 ),
         .cerf_state_o     ( cerf_state             ),
         .cerf_write_data_i( cerf_write_data_i      ),
-        .cerf_write_en_i  ( cerf_write_en_i        )
+        .cerf_write_en_i  ( cerf_write_en_i        ),
+        .cerf_global_write_data_i( cerf_global_write_data ),
+        .cerf_global_write_en_i  ( cerf_global_write_en   )
     );
 
 endmodule

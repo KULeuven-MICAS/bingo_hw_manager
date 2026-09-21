@@ -17,9 +17,12 @@ TBS           ?= bingo_hw_manager_top \
                  bingo_hw_manager_tagged \
                  bingo_hw_manager_tagged_mc \
                  bingo_hw_manager_dep_matrix \
+                 bingo_hw_manager_multiedge \
+                 bingo_hw_manager_cerf_mc \
                  bingo_hw_manager_cerf_basic \
                  bingo_hw_manager_cerf_skip \
-                 bingo_hw_manager_task_fetch
+                 bingo_hw_manager_task_fetch \
+                 bingo_hw_manager_task_fetch_top
 
 # Source files the compiled library depends on. Without these, compile.log depends only on
 # Bender.yml, so editing any .sv leaves a STALE compiled library in place and every subsequent

@@ -46,6 +46,9 @@ sources:
       - test/tb_bingo_hw_manager_cerf_skip.sv
       - test/tb_bingo_hw_manager_tagged.sv      # identity-aware deps end-to-end
       - test/tb_bingo_hw_manager_tagged_mc.sv   # identity-aware deps, MULTI-CLUSTER cross-cluster aliasing
+      - test/tb_bingo_hw_manager_multiedge.sv   # a 3-way JOIN as ONE multi-column dep_check
+      - test/tb_bingo_hw_manager_cerf_mc.sv     # cross-die CERF: predicate rides the dep-set edge
+      - test/tb_bingo_hw_manager_task_fetch_top.sv # master-mode task fetch THROUGH the top
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.

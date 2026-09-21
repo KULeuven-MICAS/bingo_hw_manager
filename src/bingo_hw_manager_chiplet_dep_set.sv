@@ -15,6 +15,8 @@ module bingo_hw_manager_chiplet_dep_set #(
     /// The narrow, single-beat cross-chiplet dep-set message. See its definition in
     /// bingo_hw_manager_top for why the full descriptor must NOT go on this wire.
     parameter type bingo_hw_manager_chiplet_msg_t     = logic,
+    /// Width of the cross-die CERF window carried by a gating task's message.
+    parameter int unsigned GlobalCerfGroups            = 8,
     // Dependent parameters, DO NOT OVERRIDE!
     parameter type host_axi_lite_addr_t = logic [HostAxiLiteAddrWidth-1:0],
     parameter type host_axi_lite_data_t = logic [HostAxiLiteDataWidth-1:0],
@@ -26,6 +28,9 @@ module bingo_hw_manager_chiplet_dep_set #(
     input logic rst_ni,
     // Assume all the chiplet has the same chiplet mailbox base address
     input  host_axi_lite_addr_t                              chiplet_mailbox_base_addr_i,
+    /// This die's global CERF window, sampled into a GATING task's outgoing
+    /// message so the routing decision travels on the edge it gates.
+    input  logic [GlobalCerfGroups-1:0]                      cerf_global_state_i,
     /// The chiplet done issue interface to other chiplets
     /// HW Manager -----> Other chiplets
     output host_axi_lite_req_t                               to_remote_chiplet_axi_lite_req_o,
@@ -55,6 +60,10 @@ module bingo_hw_manager_chiplet_dep_set #(
         chiplet_msg.dep_set_code       = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_code;
         chiplet_msg.dep_set_tag        = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_tag;
         chiplet_msg.task_id            = chiplet_dep_set_task_desc_i.task_id;
+        // Only a GATING task carries a predicate. Tagging every message would let
+        // a stale one clobber a newer decision on the far side.
+        chiplet_msg.cerf_valid         = (chiplet_dep_set_task_desc_i.task_type == 2'b10);
+        chiplet_msg.cerf_global        = cerf_global_state_i;
     end
 
     // State Update

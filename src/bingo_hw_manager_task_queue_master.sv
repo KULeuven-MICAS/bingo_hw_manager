@@ -29,11 +29,9 @@
 //      never visible downstream. A consumer either sees a whole descriptor or nothing.
 //
 // WHY PIPELINE IT. The manager walks the descriptor list in order, and a core cannot be granted a
-// task the manager has not fetched yet. Measured on HeMAiA fa_decode_4cluster (waveform, 4
-// clusters, 437 descriptors): 62 cc between descriptor pops, the task queue EMPTY 99.4% of a
-// 9,917 cc stall, and 27,032 cc of the 44,057 cc run spent walking the list with every core idle.
-// That is one AXI-Lite round trip (~31 cc to L3 through the quad-ctrl fabric) per beat, fully
-// serialised. Overlapping the round trips is the whole fix.
+// task the manager has not fetched yet. Serialised fetching therefore costs one AXI-Lite round
+// trip to L3 per beat with every core idle, and on a fine-grained graph that dominates the run.
+// Overlapping the round trips is the whole fix.
 //
 // `MaxOutstanding = 1` reproduces the old strictly-serial behaviour, so this is opt-in.
 // The task list itself is immutable while the manager runs (the host writes it before `start_i`
@@ -130,6 +128,22 @@ module bingo_hw_manager_task_queue_master #(
     logic                  beat_last;
     logic                  beat_accept;
     logic [DescWidth-1:0]  desc_partial_q;
+    // The bounds the parameter comment promises, enforced rather than trusted.
+    // 0 outstanding can never issue a read, and more beats in flight than the
+    // FIFO can hold risks a completed descriptor with nowhere to go.
+    if (MaxOutstanding == 0) begin : gen_max_outstanding_zero_check
+        initial begin
+        $error("MaxOutstanding must be >= 1 (0 can never issue a read).");
+        $finish;
+        end
+    end
+    if (MaxOutstanding > TaskQueueDepth) begin : gen_max_outstanding_depth_check
+        initial begin
+        $error("MaxOutstanding (%0d) exceeds TaskQueueDepth (%0d): a beat in flight may complete a descriptor with no FIFO slot to land in.", MaxOutstanding, TaskQueueDepth);
+        $finish;
+        end
+    end
+
     logic [DescWidth-1:0]  desc_assembled;
 
     assign beat_last   = (Beats == 1) ? 1'b1 : (beat_q == BeatCntW'(Beats - 1));

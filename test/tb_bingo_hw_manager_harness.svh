@@ -28,7 +28,20 @@ import axi_test::*;
 // Local configuration (from defines)
 // ---------------------------------------------------------------------------
 localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1; // 1: CSR Req/Resp
-localparam int unsigned TASK_QUEUE_TYPE = 0;                     // 0: AXI Lite Slave
+// 0: AXI-Lite SLAVE task queue (host pushes descriptors into a mailbox).
+// 1: AXI-Lite MASTER -- the manager FETCHES the descriptor list from memory,
+//    which is the path HeMAiA uses. A TB selects it with `TB_TASK_QUEUE_TYPE.
+`ifdef TB_TASK_QUEUE_TYPE
+localparam int unsigned TASK_QUEUE_TYPE = `TB_TASK_QUEUE_TYPE;
+`else
+localparam int unsigned TASK_QUEUE_TYPE = 0;
+`endif
+// AXI-Lite reads the master-mode task queue may keep in flight.
+`ifdef TB_TASK_QUEUE_MAX_OUTSTANDING
+localparam int unsigned TASK_QUEUE_MAX_OUTSTANDING = `TB_TASK_QUEUE_MAX_OUTSTANDING;
+`else
+localparam int unsigned TASK_QUEUE_MAX_OUTSTANDING = 1;
+`endif
 localparam int unsigned NUM_CHIPLET                = `TB_NUM_CHIPLET;
 localparam int unsigned NUM_CLUSTERS_PER_CHIPLET   = `TB_NUM_CLUSTERS_PER_CHIPLET;
 localparam int unsigned NUM_CORES_PER_CLUSTER      = `TB_NUM_CORES_PER_CLUSTER;
@@ -57,6 +70,15 @@ localparam host_axi_lite_addr_t DONE_QUEUE_BASE      = 48'h2000_0000;
 localparam host_axi_lite_addr_t READY_QUEUE_BASE     = 48'h3000_0000;
 localparam host_axi_lite_addr_t READY_QUEUE_STRIDE   = 48'h1000;
 localparam host_axi_lite_addr_t H2H_DONE_QUEUE_BASE  = 48'h4000_0000;
+localparam host_axi_lite_addr_t TASK_LIST_BASE       = 48'h5000_0000;
+// Descriptor CONTAINER width. The slave task queue commits one descriptor per W
+// beat and so needs the degenerate single-beat container; the master path can
+// carry a wider one, and `TB_TASK_DESC_BUS_WIDTH selects it.
+`ifdef TB_TASK_DESC_BUS_WIDTH
+localparam int unsigned TASK_DESC_BUS_WIDTH = `TB_TASK_DESC_BUS_WIDTH;
+`else
+localparam int unsigned TASK_DESC_BUS_WIDTH = HOST_DW;
+`endif
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -71,6 +93,13 @@ typedef logic [cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    bingo_hw_ma
 typedef logic [NUM_CORES_PER_CLUSTER-1:0]                            bingo_hw_manager_dep_code_t;
 // Per-edge identity tag (must mirror bingo_hw_manager_top exactly).
 localparam int unsigned DEP_TAG_WIDTH = 4;
+// Cross-die CERF window width. A TB that exercises cross-chiplet conditional
+// execution overrides it with `TB_GLOBAL_CERF_GROUPS.
+`ifdef TB_GLOBAL_CERF_GROUPS
+localparam int unsigned GLOBAL_CERF_GROUPS = `TB_GLOBAL_CERF_GROUPS;
+`else
+localparam int unsigned GLOBAL_CERF_GROUPS = 8;
+`endif
 typedef logic [DEP_TAG_WIDTH-1:0]                                    bingo_hw_manager_dep_tag_t;
 
 typedef struct packed {
@@ -102,11 +131,11 @@ typedef struct packed {
 } bingo_hw_manager_task_desc_t;
 
 localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
-localparam int unsigned ReservedBitsForTaskDesc = HOST_DW - TaskDescWidth;
+localparam int unsigned ReservedBitsForTaskDesc = TASK_DESC_BUS_WIDTH - TaskDescWidth;
 
-if (TaskDescWidth > HOST_DW) begin : gen_task_desc_width_check
+if (TaskDescWidth > TASK_DESC_BUS_WIDTH) begin : gen_task_desc_width_check
     initial begin
-        $error("Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)!", TaskDescWidth, HOST_DW);
+        $error("Task Descriptor width (%0d) exceeds TaskDescBusWidth (%0d)!", TaskDescWidth, TASK_DESC_BUS_WIDTH);
         $finish;
     end
 end
@@ -492,6 +521,120 @@ endtask
 // ---------------------------------------------------------------------------
 // DUT Instantiation
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MASTER-MODE TASK QUEUE (TASK_QUEUE_TYPE == 1)
+// ---------------------------------------------------------------------------
+// The manager FETCHES its descriptor list over AXI-Lite instead of having it
+// pushed. A stimulus fills `task_list[chip]`, sets `task_list_n[chip]`, then
+// raises `tq_go[chip]`; the model below serves the list as a read-only memory.
+//
+// It queues several outstanding ARs on purpose. A memory that could only ever
+// hold one would make a pipelined DUT look correct no matter what
+// TaskQueueMaxOutstanding is set to, which is the thing under test here.
+localparam int unsigned TASK_LIST_MAX   = 256;
+localparam int unsigned TQ_BEAT_BYTES   = HOST_DW / 8;
+localparam int unsigned TQ_DESC_BYTES   = TASK_DESC_BUS_WIDTH / 8;
+localparam int unsigned TQ_MEM_Q_DEPTH  = 8;
+
+bingo_hw_manager_task_desc_full_t task_list [NUM_CHIPLET][TASK_LIST_MAX];
+int unsigned                      task_list_n [NUM_CHIPLET];
+logic [NUM_CHIPLET-1:0]           tq_go;
+
+host_req_t            [NUM_CHIPLET-1:0] tq_fetch_req;
+host_resp_t           [NUM_CHIPLET-1:0] tq_fetch_resp;
+host_axi_lite_addr_t  [NUM_CHIPLET-1:0] tq_list_base;
+device_axi_lite_data_t                  tq_num_task  [NUM_CHIPLET];
+device_axi_lite_data_t                  tq_start     [NUM_CHIPLET];
+logic [NUM_CHIPLET-1:0]                 tq_reset_start_en;
+// Beats actually served, per chiplet -- the observable a TB checks the fetch on.
+int unsigned                            tq_beats_served [NUM_CHIPLET];
+// Highest number of ARs in flight at once. With MaxOutstanding == 1 this can
+// never exceed 1, so it is what proves the parameter reached the master.
+int unsigned                            tq_peak_outstanding [NUM_CHIPLET];
+
+for (genvar ci = 0; ci < NUM_CHIPLET; ci++) begin : gen_task_list_mem
+    initial begin
+        task_list_n[ci]         = 0;
+        tq_beats_served[ci]     = 0;
+        tq_peak_outstanding[ci] = 0;
+    end
+
+    if (TASK_QUEUE_TYPE == 1) begin : gen_master_mode
+        assign tq_list_base[ci] = TASK_LIST_BASE;
+        assign tq_num_task[ci]  = device_axi_lite_data_t'(task_list_n[ci]);
+        // ONE SHOT. start is raised once and dropped when the DUT acknowledges.
+        // Re-raising it because `tq_go` is still held would restart the fetch and
+        // the manager would walk the list again, forever.
+        logic tq_started;
+        always_ff @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                tq_start[ci] <= '0;
+                tq_started   <= 1'b0;
+            end else if (tq_reset_start_en[ci]) begin
+                tq_start[ci] <= '0;
+            end else if (tq_go[ci] && !tq_started) begin
+                tq_start[ci] <= device_axi_lite_data_t'(1);
+                tq_started   <= 1'b1;
+            end
+        end
+
+        host_axi_lite_addr_t tq_pend [$];
+        int unsigned         tq_lat;
+        always_ff @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                tq_fetch_resp[ci].ar_ready <= 1'b0;
+                tq_fetch_resp[ci].r_valid  <= 1'b0;
+                tq_fetch_resp[ci].r        <= '0;
+                tq_lat                     <= 0;
+                tq_pend.delete();
+            end else begin
+                // Room for one more even if an AR lands this cycle, so a
+                // registered ar_ready never promises space the queue lacks.
+                tq_fetch_resp[ci].ar_ready <= (tq_pend.size() < (TQ_MEM_Q_DEPTH - 1));
+                if (tq_fetch_req[ci].ar_valid && tq_fetch_resp[ci].ar_ready) begin
+                    tq_pend.push_back(tq_fetch_req[ci].ar.addr);
+                    if (tq_pend.size() > tq_peak_outstanding[ci]) begin
+                        tq_peak_outstanding[ci] <= tq_pend.size();
+                    end
+                end
+                if (tq_pend.size() != 0) begin
+                    if (tq_lat != 0) begin
+                        tq_lat <= tq_lat - 1;
+                    end else if (!tq_fetch_resp[ci].r_valid) begin
+                        // Serve the HEAD: same-ID reads return in issue order,
+                        // which is what the master's atomicity argument rests on.
+                        automatic int unsigned off  = int'(tq_pend[0] - TASK_LIST_BASE);
+                        automatic int unsigned didx = off / TQ_DESC_BYTES;
+                        automatic int unsigned bidx = (off % TQ_DESC_BYTES) / TQ_BEAT_BYTES;
+                        tq_fetch_resp[ci].r.data  <= (didx < task_list_n[ci])
+                            ? task_list[ci][didx][bidx*HOST_DW +: HOST_DW]
+                            : {HOST_DW{1'bx}};
+                        tq_fetch_resp[ci].r.resp  <= 2'b00;
+                        tq_fetch_resp[ci].r_valid <= 1'b1;
+                        tq_pend.pop_front();
+                        tq_beats_served[ci]       <= tq_beats_served[ci] + 1;
+                        tq_lat <= (off[5:3] % 3);   // 0..2 cycles of jitter
+                    end
+                end
+                if (tq_fetch_resp[ci].r_valid && tq_fetch_req[ci].r_ready) begin
+                    tq_fetch_resp[ci].r_valid <= 1'b0;
+                end
+            end
+        end
+        always_comb begin
+            tq_fetch_resp[ci].aw_ready = 1'b0;
+            tq_fetch_resp[ci].w_ready  = 1'b0;
+            tq_fetch_resp[ci].b_valid  = 1'b0;
+            tq_fetch_resp[ci].b        = '0;
+        end
+    end else begin : gen_slave_mode
+        assign tq_list_base[ci]  = '0;
+        assign tq_num_task[ci]   = '0;
+        assign tq_start[ci]      = '0;
+        assign tq_fetch_resp[ci] = '0;
+    end
+end
+
 for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_dut
     bingo_hw_manager_top #(
         .READY_AND_DONE_QUEUE_INTERFACE_TYPE ( READY_AND_DONE_QUEUE_INTERFACE_TYPE ),
@@ -499,13 +642,13 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),
         .DepTagWidth                         ( DEP_TAG_WIDTH                       ),
+        .GlobalCerfGroups                    ( GLOBAL_CERF_GROUPS                  ),
         .HostAxiLiteAddrWidth                ( HOST_AW                             ),
         .HostAxiLiteDataWidth                ( HOST_DW                             ),
-        // These TBs drive the AXI-Lite SLAVE task queue (TASK_QUEUE_TYPE==0), which commits one
-        // descriptor per W beat and therefore requires the single-beat (degenerate) descriptor
-        // container. The multi-beat descriptor is covered by tb_bingo_hw_manager_task_fetch,
-        // which drives the MASTER path that HeMAiA actually uses.
-        .TaskDescBusWidth                    ( HOST_DW                             ),
+        // TASK_QUEUE_TYPE==0 commits one descriptor per W beat and so needs the
+        // degenerate single-beat container; the master path may be wider.
+        .TaskDescBusWidth                    ( TASK_DESC_BUS_WIDTH                 ),
+        .TaskQueueMaxOutstanding             ( TASK_QUEUE_MAX_OUTSTANDING          ),
         .DeviceAxiLiteAddrWidth              ( DEV_AW                              ),
         .DeviceAxiLiteDataWidth              ( DEV_DW                              ),
         .host_axi_lite_req_t                 ( host_req_t                          ),
@@ -521,13 +664,13 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .task_queue_base_addr_i               ( {chip_id[chiplet_idx], TASK_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}  ),
         .task_queue_axi_lite_req_i            ( local_task_queue_req[chiplet_idx]                            ),
         .task_queue_axi_lite_resp_o           ( local_task_queue_resp[chiplet_idx]                           ),
-        .task_list_base_addr_i                ( '0                                                          ),
-        .num_task_i                           ( '0                                                          ),
-        .bingo_hw_manager_start_i             ( '0                                                          ),
+        .task_list_base_addr_i                ( tq_list_base[chiplet_idx]                                   ),
+        .num_task_i                           ( tq_num_task[chiplet_idx]                                    ),
+        .bingo_hw_manager_start_i             ( tq_start[chiplet_idx]                                       ),
         .bingo_hw_manager_reset_start_o       ( /* unused */                                                ),
-        .bingo_hw_manager_reset_start_en_o    ( /* unused */                                                ),
-        .task_queue_axi_lite_req_o            ( /* unused */                                                ),
-        .task_queue_axi_lite_resp_i           ( '0                                                          ),
+        .bingo_hw_manager_reset_start_en_o    ( tq_reset_start_en[chiplet_idx]                              ),
+        .task_queue_axi_lite_req_o            ( tq_fetch_req[chiplet_idx]                                   ),
+        .task_queue_axi_lite_resp_i           ( tq_fetch_resp[chiplet_idx]                                  ),
         .chiplet_mailbox_base_addr_i          ( {chip_id[chiplet_idx], H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
         .to_remote_chiplet_axi_lite_req_o     ( h2h_axi_lite_xbar_in_req[chiplet_idx]                       ),
         .to_remote_chiplet_axi_lite_resp_i    ( h2h_axi_lite_xbar_in_resp[chiplet_idx]                      ),

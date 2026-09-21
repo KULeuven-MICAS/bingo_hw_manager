@@ -60,9 +60,12 @@ module bingo_hw_manager_chiplet_dep_set #(
         chiplet_msg.dep_set_code       = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_code;
         chiplet_msg.dep_set_tag        = chiplet_dep_set_task_desc_i.dep_set_info.dep_set_tag;
         chiplet_msg.task_id            = chiplet_dep_set_task_desc_i.task_id;
-        // Only a GATING task carries a predicate. Tagging every message would let
-        // a stale one clobber a newer decision on the far side.
-        chiplet_msg.cerf_valid         = (chiplet_dep_set_task_desc_i.task_type == 2'b10);
+        // The COMPILER says which message carries the predicate. It is not the
+        // gating task's own message: the dummy-set pass proxies every remote
+        // successor through a dummy on the gating task's core, so that dummy is
+        // what crosses the die. Tagging every message instead would let a stale
+        // one clobber a newer decision on the far side.
+        chiplet_msg.cerf_valid         = chiplet_dep_set_task_desc_i.cerf_carry;
         chiplet_msg.cerf_global        = cerf_global_state_i;
     end
 

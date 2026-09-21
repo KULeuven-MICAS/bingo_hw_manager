@@ -118,6 +118,7 @@ typedef struct packed {
 } bingo_hw_manager_dep_set_info_t;
 
 typedef struct packed {
+    logic                                        cerf_carry;
     bingo_hw_manager_dep_set_info_t              dep_set_info;
     bingo_hw_manager_dep_check_info_t            dep_check_info;
     bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -142,6 +143,7 @@ end
 
 typedef struct packed {
     logic [ReservedBitsForTaskDesc-1:0]          reserved_bits;
+    logic                                        cerf_carry;
     bingo_hw_manager_dep_set_info_t              dep_set_info;
     bingo_hw_manager_dep_check_info_t            dep_check_info;
     bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -215,7 +217,8 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id,
     input bingo_hw_manager_dep_code_t            dep_set_code,
     input bingo_hw_manager_dep_tag_t             dep_check_tag = '0,
-    input bingo_hw_manager_dep_tag_t             dep_set_tag = '0
+    input bingo_hw_manager_dep_tag_t             dep_set_tag = '0,
+    input logic                                  cerf_carry = 1'b0
 );
     bingo_hw_manager_task_desc_full_t tmp;
     tmp.task_type                        = task_type;
@@ -232,6 +235,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
     tmp.dep_set_info.dep_set_tag         = dep_set_tag;
+    tmp.cerf_carry                       = cerf_carry;
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
@@ -277,7 +281,8 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     input bingo_hw_manager_assigned_chiplet_id_t dep_set_chiplet_id,
     input bingo_hw_manager_assigned_cluster_id_t dep_set_cluster_id,
     input bingo_hw_manager_dep_code_t            dep_set_code,
-    input bingo_hw_manager_dep_tag_t             dep_set_tag = '0
+    input bingo_hw_manager_dep_tag_t             dep_set_tag = '0,
+    input logic                                  cerf_carry = 1'b0
 );
     bingo_hw_manager_task_desc_full_t tmp;
     tmp.task_type                        = task_type;
@@ -292,6 +297,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.dep_set_info.dep_set_cluster_id  = dep_set_cluster_id;
     tmp.dep_set_info.dep_set_code        = dep_set_code;
     tmp.dep_set_info.dep_set_tag         = dep_set_tag;
+    tmp.cerf_carry                       = cerf_carry;
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;

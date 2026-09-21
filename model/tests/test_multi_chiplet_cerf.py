@@ -152,3 +152,54 @@ class TestGlobalInstantHidesIt:
             r, bad = _run("global_instant", 80, ACTIVE, seed)
             assert not r.deadlock_detected
             assert not bad
+
+
+class TestCrossDiePredicatePathIsChecked:
+    """Oracle check 5: the compiler must mark whoever carries the window.
+
+    A gating task's own dep_set stays local -- the dummy-set pass proxies every
+    remote successor through a dummy on the gating task's core. If that proxy is
+    not marked `cerf_carry`, the predicate never crosses and the remote task
+    silently skips work the router selected. Nothing at runtime notices.
+    """
+
+    def _two_die_gated(self):
+        d = BingoDFG(num_clusters_per_chiplet=1, num_cores_per_cluster=3,
+                     dep_tag_width=4, num_chiplets=2)
+        router = BingoNode(0, 0, 0, node_name="router")
+        d.bingo_add_node(router)
+        for chip, nm in ((0, "e_local"), (1, "e_remote")):
+            e = BingoNode(chip, 0, 1, node_name=nm)
+            d.bingo_add_node(e)
+            d.bingo_add_edge(router, e, cond=True)
+        compile_dfg(d, dep_tag_width=4)
+        return d
+
+    def test_compiler_marks_the_proxy(self):
+        d = self._two_die_gated()
+        carriers = [n for n in d.node_list if getattr(n, "cerf_carry", False)]
+        assert carriers, "no task was marked to carry the cross-die CERF window"
+        for n in carriers:
+            assert n.dep_set_enable and n.dep_set_chiplet_id != n.assigned_chiplet_id, (
+                f"{n.node_name} is marked cerf_carry but does not send a "
+                f"cross-die message")
+
+    def test_oracle_accepts_the_marked_graph(self):
+        d = self._two_die_gated()
+        rep = d.bingo_validate_no_hang(tag_width=4)
+        assert rep["cross_die_gated"] >= 1, rep
+
+    def test_oracle_catches_an_unmarked_proxy(self):
+        """The regression this check exists for."""
+        d = self._two_die_gated()
+        for n in d.node_list:
+            n.cerf_carry = False          # as if the compiler forgot
+        with pytest.raises(ValueError, match="carries the CERF window"):
+            d.bingo_validate_no_hang(tag_width=4)
+
+    def test_single_die_graph_is_unaffected(self):
+        """A graph with no cross-die conditional must not need a carrier."""
+        d, _router, _experts, _agg = _moe(n_experts=2, n_chiplets=1)
+        compile_dfg(d, dep_tag_width=4)
+        rep = d.bingo_validate_no_hang(tag_width=4)
+        assert rep["cross_die_gated"] == 0

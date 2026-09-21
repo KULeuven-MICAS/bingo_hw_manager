@@ -210,6 +210,14 @@ module bingo_hw_manager_top #(
 
     // Task info struct (DARTS: includes conditional execution fields)
     typedef struct packed{
+        /// CARRIES THE CROSS-DIE CERF WINDOW. Set by the compiler on whichever
+        /// task actually SENDS the cross-chiplet message for a gating region.
+        /// That is NOT the gating task: the dummy-set pass always proxies a
+        /// remote successor through a dummy on the gating task's own core, so
+        /// inferring this from task_type == GATING would never fire on a real
+        /// compiled graph. The compiler states it instead of the hardware
+        /// guessing.
+        logic                                        cerf_carry;
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
         bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -254,6 +262,7 @@ module bingo_hw_manager_top #(
     // Task Descriptor padded out to the container width
     typedef struct packed{
         logic [ReservedBitsForTaskDesc-1:0]          reserved_bits;
+        logic                                        cerf_carry;
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
         bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -685,6 +694,7 @@ module bingo_hw_manager_top #(
     assign cur_task_desc.assigned_core_id = cur_task_desc_full.assigned_core_id;
     assign cur_task_desc.dep_check_info = cur_task_desc_full.dep_check_info;
     assign cur_task_desc.dep_set_info = cur_task_desc_full.dep_set_info;
+    assign cur_task_desc.cerf_carry = cur_task_desc_full.cerf_carry;
     // DARTS Tier 1: CERF fields
     assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
     assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
@@ -745,6 +755,7 @@ module bingo_hw_manager_top #(
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].assigned_chiplet_id = checkout_queue_data_out[core][cluster].assigned_chiplet_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_id = checkout_queue_data_out[core][cluster].task_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_type = checkout_queue_data_out[core][cluster].task_type;
+                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].cerf_carry = checkout_queue_data_out[core][cluster].cerf_carry;
                 stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][1];
             end           
         end

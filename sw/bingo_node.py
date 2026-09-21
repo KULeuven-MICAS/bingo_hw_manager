@@ -94,6 +94,9 @@ def bingo_task_desc_fields(
         ("dep_set_cluster_id",  cluster_id_width),
         ("dep_set_code",        num_cores_per_cluster),
         ("dep_set_tag",         dep_tag_width),
+        # Set by the compiler on whichever task SENDS the cross-die message
+        # for a gating region -- see bingo_hw_manager_top.cerf_carry.
+        ("cerf_carry",          1),
     ]
 
 
@@ -127,6 +130,9 @@ class BingoNode(metaclass=ABCMeta):
         self._cond_exec_en: bool = False
         self._cond_exec_group_id: int = 0
         self._cond_exec_invert: bool = False
+        # Set by the dummy-set pass on whichever task SENDS the cross-die
+        # message for a gating region. See bingo_hw_manager_top.cerf_carry.
+        self._cerf_carry: bool = False
         # CERF groups this gating node writes on completion
         self._cerf_write_groups: list[int] = []
 
@@ -194,6 +200,14 @@ class BingoNode(metaclass=ABCMeta):
     @cond_exec_group_id.setter
     def cond_exec_group_id(self, value: int) -> None:
         self._cond_exec_group_id = value
+
+    @property
+    def cerf_carry(self) -> bool:
+        return self._cerf_carry
+
+    @cerf_carry.setter
+    def cerf_carry(self, value: bool) -> None:
+        self._cerf_carry = bool(value)
 
     @property
     def cond_exec_invert(self) -> bool:
@@ -317,6 +331,7 @@ class BingoNode(metaclass=ABCMeta):
             return code
 
         return {
+            "cerf_carry":          int(self._cerf_carry),
             "cond_exec_invert":    int(self._cond_exec_invert),
             "cond_exec_group_id":  int(self._cond_exec_group_id),
             "cond_exec_en":        int(self._cond_exec_en),

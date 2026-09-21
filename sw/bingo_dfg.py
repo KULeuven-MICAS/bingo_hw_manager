@@ -233,6 +233,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                         dummy_set_node.dep_check_enable = False
                         dummy_set_node.dep_check_list = []
                         dummy_set_node.remote_dep_set_all = True
+                        # The gating task's remote edge is proxied through THIS dummy,
+                        # so this is the message that must carry the CERF window.
+                        dummy_set_node.cerf_carry = (cur_node.node_type == "gating")
                         # Add the dummy set node after cur_node for remote successors in this core group
                         self.bingo_insert_node_after(cur_node, dummy_set_node, group)
                     else:
@@ -253,6 +256,9 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                             dummy_set_node.dep_check_enable = False
                             dummy_set_node.dep_check_list = []
                             dummy_set_node.remote_dep_set_all = False
+                            # The gating task's remote edge is proxied through THIS dummy,
+                            # so this is the message that must carry the CERF window.
+                            dummy_set_node.cerf_carry = (cur_node.node_type == "gating")
                             # Add the dummy set node to the graph
                             self.bingo_insert_node_between(cur_node, remote_succ, dummy_set_node)
             if len(local_succ_list) > 1 and self.enable_multi_row_set:
@@ -700,12 +706,21 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         # single edge touching a single cell. A broadcast dep_set, or (once the
         # descriptor carries a mask) a multi-column join / multi-row fan-out, is
         # a group spanning several cells that must hold ONE tag in all of them.
+        # DETERMINISM. Node keys are INTEGERS derived from node_id, and the
+        # components are sorted. Keys containing a string (or a node object)
+        # hash differently in every process -- Python randomises str hashing --
+        # so component order, and therefore every tag, would change from one
+        # compile to the next. Firmware has to be reproducible.
         bip = nx.Graph()
+        skey = lambda n: 2 * n.node_id
+        ckey = lambda n: 2 * n.node_id + 1
         for su, cv, _cell in pairs:
-            bip.add_edge(("S", su), ("C", cv))
+            bip.add_edge(skey(su), ckey(cv))
         gid = {}
         n_groups = 0
-        for i, comp in enumerate(nx.connected_components(bip)):
+        for i, comp in enumerate(
+                sorted((sorted(c) for c in nx.connected_components(bip)),
+                       key=lambda c: c[0])):
             for key in comp:
                 gid[key] = i
             n_groups = i + 1
@@ -715,7 +730,7 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
         cells_of: dict = {}
         edges_of: dict = {}
         for su, cv, cell in pairs:
-            gi = gid[("S", su)]
+            gi = gid[skey(su)]
             setters.setdefault(gi, set()).add(su)
             drainers.setdefault(gi, set()).add(cv)
             cells_of.setdefault(gi, set()).add(cell)
@@ -802,22 +817,24 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 edges.sort(key=lambda e: (pos[e[0]], pos[e[1]]))
                 n = len(edges)
                 reach = [_descendants(cv) for (_su, cv) in edges]
+                # Integer node labels and a sorted walk of the matching, for
+                # the same reproducibility reason as above.
                 B = nx.Graph()
                 for a in range(n):
-                    B.add_node(("L", a)); B.add_node(("R", a))
+                    B.add_node(a); B.add_node(n + a)
                 for a in range(n):
                     for b in range(n):
                         if a == b:
                             continue
                         if edges[b][0] is edges[a][1] or edges[b][0] in reach[a]:
-                            B.add_edge(("L", a), ("R", b))
+                            B.add_edge(a, n + b)
                 match = (nx.algorithms.bipartite.hopcroft_karp_matching(
-                             B, top_nodes=[("L", a) for a in range(n)])
+                             B, top_nodes=list(range(n)))
                          if B.number_of_edges() else {})
                 succ, has_pred = {}, set()
-                for node, m in match.items():
-                    if node[0] == "L":
-                        succ[node[1]] = m[1]; has_pred.add(m[1])
+                for node in sorted(match):
+                    if node < n:
+                        succ[node] = match[node] - n; has_pred.add(match[node] - n)
                 tag_of, n_chains = {}, 0
                 for a in range(n):
                     if a in has_pred:
@@ -858,8 +875,8 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 groups_in_cell.setdefault(cell, []).append(gi)
         H = nx.Graph()
         H.add_nodes_from(range(n_groups))
-        for cell, gs in groups_in_cell.items():
-            for a, b in _it.combinations(gs, 2):
+        for cell in sorted(groups_in_cell):
+            for a, b in _it.combinations(sorted(groups_in_cell[cell]), 2):
                 if not _precedes(a, b) and not _precedes(b, a):
                     H.add_edge(a, b)
         colour = nx.coloring.greedy_color(H, strategy="DSATUR")
@@ -881,9 +898,146 @@ class BingoDFG(DiGraphWrapper[BingoNode]):
                 f"between them lets two groups share a tag), or widen DepTagWidth "
                 f"-- the descriptor carries TWO tags, so each step up costs 2 bits.")
         for su, cv, _cell in pairs:
-            t = colour[gid[("S", su)]]
+            t = colour[gid[skey(su)]]
             su.dep_set_tag = t
             cv.dep_check_tag = t
+
+    def bingo_validate_no_hang(self, tag_width: int | None = None) -> dict:
+        """Static check that the LOWERED graph cannot deadlock at runtime.
+
+        This validates the OUTPUT of the lowering, re-deriving the properties
+        the passes are supposed to guarantee instead of trusting that they did.
+        An allocator bug that produces a hanging descriptor list is otherwise
+        invisible until silicon: a stuck dep-check does not raise, does not
+        time out and does not corrupt anything -- the machine simply stops.
+
+        Must run LAST, after tags are allocated. Returns a summary dict; raises
+        ValueError on the first violation with enough detail to act on.
+
+        The four ways a lowered graph can hang:
+
+        1. TAG MISMATCH -- a producer writes one tag and its consumer waits on
+           another, so the bit the consumer wants is never set.
+        2. UNSATISFIABLE CHECK -- a consumer checks a producer column that no
+           reachable producer ever sets with that tag.
+        3. CELL ALIASING -- two edges that can be live at the same time share
+           one (cell, tag), i.e. ONE presence bit. The first consumer to check
+           drains it and the second waits forever. This is the hazard per-edge
+           tags exist to remove, so checking it here is the real oracle.
+        4. CAPACITY -- a cell needs more distinct tags than the descriptor can
+           encode.
+        """
+        if tag_width is None:
+            tag_width = self.dep_tag_width
+        max_tags = 1 << tag_width
+        topo = self.bingo_stream_order()
+
+        # Happens-before, including the same-core program order the manager's
+        # in-order per-core queue enforces.
+        hb = nx.DiGraph()
+        hb.add_nodes_from(self.nodes())
+        hb.add_edges_from(self.edges())
+        by_core: dict = {}
+        for nd in topo:
+            by_core.setdefault((nd.assigned_chiplet_id, nd.assigned_cluster_id,
+                                nd.assigned_core_id), []).append(nd)
+        for seq in by_core.values():
+            for i in range(len(seq) - 1):
+                hb.add_edge(seq[i], seq[i + 1])
+        _desc: dict = {}
+
+        def reach(n):
+            if n not in _desc:
+                _desc[n] = nx.descendants(hb, n)
+            return _desc[n]
+
+        cells: dict = {}          # cell -> [(set_node, check_node), ...]
+        covered: dict = {}        # (check_node, producer core) -> True
+        for u, v in self.edges():
+            if not (u.dep_set_enable and v.dep_check_enable):
+                continue
+            C, R = u.assigned_core_id, v.assigned_core_id
+            if C not in (v.dep_check_list or []) or R not in (u.dep_set_list or []):
+                continue
+            # 1. TAG MISMATCH
+            if u.dep_set_tag != v.dep_check_tag:
+                raise ValueError(
+                    f"hang check: '{u.node_name}' sets tag {u.dep_set_tag} but its "
+                    f"consumer '{v.node_name}' waits on tag {v.dep_check_tag}. The "
+                    f"consumer can never pass.")
+            cells.setdefault((v.assigned_chiplet_id, v.assigned_cluster_id, R, C),
+                             []).append((u, v))
+            covered[(v, C)] = True
+
+        # 2. UNSATISFIABLE CHECK
+        for v in self.node_list:
+            if not v.dep_check_enable:
+                continue
+            for c in (v.dep_check_list or []):
+                if (v, c) not in covered:
+                    raise ValueError(
+                        f"hang check: '{v.node_name}' waits on producer core {c} "
+                        f"with tag {v.dep_check_tag}, but no reachable producer "
+                        f"sets that column with that tag. It can never dispatch.")
+
+        # 3. CELL ALIASING + 4. CAPACITY
+        peak = 0
+        for cell, edges in cells.items():
+            by_tag: dict = {}
+            for (su, cv) in edges:
+                by_tag.setdefault(su.dep_set_tag, []).append((su, cv))
+            peak = max(peak, len(by_tag))
+            if len(by_tag) > max_tags:
+                raise ValueError(
+                    f"hang check: cell {cell} holds {len(by_tag)} distinct tags "
+                    f"but the descriptor encodes {max_tags} (tag_width={tag_width}).")
+            for tag, el in by_tag.items():
+                for i in range(len(el)):
+                    for j in range(i + 1, len(el)):
+                        (sa, ca), (sb, cb) = el[i], el[j]
+                        fwd = (sb is ca) or (sb in reach(ca))
+                        bwd = (sa is cb) or (sa in reach(cb))
+                        if not fwd and not bwd:
+                            raise ValueError(
+                                f"hang check: two edges that can be live at the "
+                                f"same time share tag {tag} on cell {cell}, which "
+                                f"is ONE presence bit -- the first consumer to "
+                                f"check drains it and the second waits forever.\n"
+                                f"  edge A: {sa.node_name} -> {ca.node_name}\n"
+                                f"  edge B: {sb.node_name} -> {cb.node_name}\n"
+                                f"  cell = (chiplet, cluster, consumer core, "
+                                f"producer core)")
+        # 5. CROSS-DIE PREDICATE PATH. A conditionally-gated task on another die
+        #    only learns its predicate if some task reachable from its gating
+        #    node carries the CERF window to that die. The gating task's own
+        #    dep_set does NOT: the dummy-set pass proxies every remote successor
+        #    through a dummy on the gating task's core, and that proxy is what
+        #    crosses. Without the carry bit the remote task reads a stale CERF
+        #    and silently skips work the router selected.
+        gating_targets = getattr(self, "_gating_to_targets", {})
+        cross_die = 0
+        for g, targets in gating_targets.items():
+            remote = {t.assigned_chiplet_id for t in targets
+                      if t.assigned_chiplet_id != g.assigned_chiplet_id}
+            if not remote:
+                continue
+            carriers = {n.dep_set_chiplet_id for n in ([g] + list(nx.descendants(self, g)))
+                        if getattr(n, "cerf_carry", False) and n.dep_set_enable}
+            for chip in sorted(remote):
+                if chip not in carriers:
+                    raise ValueError(
+                        f"hang check: gating task '{g.node_name}' gates work on "
+                        f"chiplet {chip}, but nothing reachable from it carries "
+                        f"the CERF window there (no node with cerf_carry and "
+                        f"dep_set_chiplet_id={chip}). The remote task would read "
+                        f"a stale CERF and skip silently.")
+                cross_die += 1
+
+        return {"edges": sum(len(e) for e in cells.values()),
+                "cells": len(cells),
+                "peak_tags_per_cell": peak,
+                "tag_capacity": max_tags,
+                "cross_die_gated": cross_die}
 
     # ----------------------------------------------------------------
     # DARTS Tier 1: Conditional Execution helpers

@@ -6,8 +6,12 @@
 // BEFORE those messages go out. Chip 1 starts with an all-zero CERF and never
 // receives a local CERF write.
 //
-//   G1 (chip0 core0, GATING) --dep_set--> C1 (chip1 core1, cond group 3)
-//   G2 (chip0 core1, GATING) --dep_set--> C2 (chip1 core2, cond group 20)
+//   G1 (chip0 core0, GATING) -> D1 (dummy proxy, cerf_carry) -> C1 (chip1, grp 3)
+//   G2 (chip0 core1, GATING) -> D2 (dummy proxy, cerf_carry) -> C2 (chip1, grp 20)
+//
+// The PROXY is the point. A gating task's own dep_set stays local; the dummy-set
+// pass routes every remote successor through a dummy on the gating task's core,
+// so that dummy is what crosses the die and what must carry the window.
 //
 // GlobalCerfGroups = 8, so group 3 is INSIDE the cross-die window and group 20
 // is outside it. The message carries only the window, therefore:
@@ -24,27 +28,42 @@
 // edges land in different dep-matrix cells and may share tag 0.
 // =============================================================================
 
-localparam int unsigned EXPECTED_TASK_COUNT     = 3;   // G1, G2, C1 (C2 skipped)
+localparam int unsigned EXPECTED_TASK_COUNT     = 3;   // G1, G2, C1 (C2 skipped; D1/D2 are dummies)
 localparam int unsigned DEADLOCK_THRESHOLD      = 8000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL = 0;
 
 localparam int unsigned GRP_IN  = 3;    // inside  GlobalCerfGroups = 8
 localparam int unsigned GRP_OUT = 20;   // outside GlobalCerfGroups = 8
 
-// ---- chip 0: two gating tasks, each signalling into chip 1 ------------------
+// ---- chip 0: a gating task, then the PROXY that crosses the die ------------
+// This mirrors what the compiler actually emits. The gating task's own dep_set
+// stays LOCAL: bingo_transform_dfg_add_dummy_set_nodes proxies every remote
+// successor through a dummy on the gating task's own core, so the dummy is what
+// crosses the die and therefore what must carry the CERF window. The compiler
+// marks it with cerf_carry; the hardware does not infer it.
 bingo_hw_manager_task_desc_full_t g1 = pack_normal_task(
     2'b10, 16'd1, 0, 0, 0,                                    // GATING, chip0 core0
-    1'b0, '0,                                                 // no dep_check
+    1'b0, '0,
+    1'b0, 1'b0, 0, 0, '0,                                     // no dep_set of its own
+    '0, '0, 1'b0
+);
+bingo_hw_manager_task_desc_full_t d1 = pack_dummy_set_task(
+    2'b01, 16'd101, 0, 0, 0,                                  // DUMMY on the same core
     1'b1, 1'b0, 8'd1, 0,                                      // dep_set -> chiplet 1
     bingo_hw_manager_dep_code_t'(8'b00000010),                // set row 1 (C1's core)
-    '0, 3'd0
+    3'd0, 1'b1                                                // tag, CERF_CARRY
 );
 bingo_hw_manager_task_desc_full_t g2 = pack_normal_task(
     2'b10, 16'd2, 0, 0, 1,                                    // GATING, chip0 core1
     1'b0, '0,
-    1'b1, 1'b0, 8'd1, 0,                                      // dep_set -> chiplet 1
+    1'b0, 1'b0, 0, 0, '0,
+    '0, '0, 1'b0
+);
+bingo_hw_manager_task_desc_full_t d2 = pack_dummy_set_task(
+    2'b01, 16'd102, 0, 0, 1,
+    1'b1, 1'b0, 8'd1, 0,
     bingo_hw_manager_dep_code_t'(8'b00000100),                // set row 2 (C2's core)
-    '0, 3'd0
+    3'd0, 1'b1
 );
 
 // ---- chip 1: two conditional consumers -------------------------------------
@@ -89,8 +108,12 @@ initial begin : chip0_push_sequence
     $display("[TRACE] %0t,TASK_PUSHED,0,0,0,1", $time);
     task_queue_master[0].write(task_queue_base[0], '0, g1, '1, resp);
     #60;
+    task_queue_master[0].write(task_queue_base[0], '0, d1, '1, resp);
+    #60;
     $display("[TRACE] %0t,TASK_PUSHED,0,0,1,2", $time);
     task_queue_master[0].write(task_queue_base[0], '0, g2, '1, resp);
+    #60;
+    task_queue_master[0].write(task_queue_base[0], '0, d2, '1, resp);
     #60;
 end
 

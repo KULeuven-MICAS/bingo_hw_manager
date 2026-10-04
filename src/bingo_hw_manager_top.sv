@@ -756,7 +756,11 @@ module bingo_hw_manager_top #(
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_id = checkout_queue_data_out[core][cluster].task_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_type = checkout_queue_data_out[core][cluster].task_type;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].cerf_carry = checkout_queue_data_out[core][cluster].cerf_carry;
-                stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][1];
+                // A normal/gating task's remote set waits for its done, as its local set does
+                stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] =
+                    stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][1] &&
+                    ((checkout_queue_data_out[core][cluster].task_type == 2'b01) ||
+                     !done_q_empty[core][cluster]);
             end           
         end
     end
@@ -1168,7 +1172,10 @@ module bingo_hw_manager_top #(
             );
 
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] = !checkout_queue_empty[core][cluster];
-            assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] = 
+            // A set-disabled entry stays local: its dep_set_chiplet_id is a don't-care (the
+            // compiler leaves it 0), and the chiplet path neither waits for nor pops its done.
+            assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] =
+                checkout_queue_data_out[core][cluster].dep_set_info.dep_set_en &&
                 (checkout_queue_data_out[core][cluster].dep_set_info.dep_set_chiplet_id != chip_id_i);
             // To Chiplet Dep Set
             assign stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster][1] = stream_arbiter_chiplet_dep_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
@@ -1273,15 +1280,18 @@ module bingo_hw_manager_top #(
 
     // Per-(core, cluster) done queue pop logic:
     // Pop when the checkout queue head for this (core, cluster) is a normal task
-    // AND the arbiter accepted the dep_set. No cross-core or cross-cluster blocking.
+    // AND that head leaves the checkout queue. No cross-core or cross-cluster blocking.
     always_comb begin
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
                 // Normal (2'b00) and gating (2'b10) tasks need done_queue match
+                // ... by whichever path its checkout entry leaves: the local set, the
+                // set-disabled drop or the chiplet set. Every one of them waits for the done
+                // entry first, so the two queues stay paired one to one.
                 done_q_pop[core][cluster] = !done_q_empty[core][cluster] &&
                     (checkout_queue_data_out[core][cluster].task_type == 2'b00 ||
                      checkout_queue_data_out[core][cluster].task_type == 2'b10) &&
-                    stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
+                    checkout_queue_pop[core][cluster];
             end
         end
     end

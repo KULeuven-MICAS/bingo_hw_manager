@@ -49,6 +49,9 @@ sources:
       - test/tb_bingo_hw_manager_multiedge.sv   # a 3-way JOIN as ONE multi-column dep_check
       - test/tb_bingo_hw_manager_cerf_mc.sv     # cross-die CERF: predicate rides the dep-set edge
       - test/tb_bingo_hw_manager_task_fetch_top.sv # master-mode task fetch THROUGH the top
+      - test/tb_bingo_hw_manager_done_pairing_chip0.sv  # set-disabled task consumes its done (local drop path)
+      - test/tb_bingo_hw_manager_done_pairing_chip1.sv  # ... on another chip than its unused dep_set_chiplet_id
+      - test/tb_bingo_hw_manager_done_pairing_remote.sv # a normal task's remote set waits for its done
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.

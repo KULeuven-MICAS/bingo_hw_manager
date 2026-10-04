@@ -505,8 +505,10 @@ Two layers, both self-contained in this repo:
   `tb_bingo_hw_manager_top` (multi-chiplet), `tb_bingo_hw_manager_cerf_basic/skip`
   (CERF), `tb_bingo_hw_manager_dep_matrix` (matrix unit), and
   `tb_bingo_hw_manager_tagged`/`_tagged_mc` (identity-aware deps end-to-end),
-  `tb_bingo_hw_manager_multiedge` (a 3-way join as ONE multi-column dep_check)
-  and `tb_bingo_hw_manager_cerf_mc` (cross-die CERF).
+  `tb_bingo_hw_manager_multiedge` (a 3-way join as ONE multi-column dep_check),
+  `tb_bingo_hw_manager_cerf_mc` (cross-die CERF) and
+  `tb_bingo_hw_manager_done_pairing_chip0/_chip1/_remote` (a task's set fires only
+  after its done, on every checkout path: these check the ORDER, not only completion).
   Per-test stimulus lives in the matching `tb_stimulus_*.svh`.
 - **DFG compiler** (`sw/bingo_dfg.py`) with automatic dummy task insertion, the
   identity-aware per-edge tag allocator, and the CERF group allocator (both
@@ -519,7 +521,8 @@ make compile.log
 make sim_all                                # every testbench in TBS
 make sim-bingo_hw_manager_top.log           # or _tagged / _tagged_mc / _dep_matrix /
                                             #    _cerf_basic / _cerf_skip / _cerf_mc /
-                                            #    _multiedge / _task_fetch
+                                            #    _multiedge / _task_fetch /
+                                            #    _done_pairing_chip0 / _chip1 / _remote
 
 # Python model + compiler tests (114 tests)
 make test-model                             # python3 -m pytest model/tests/ -v
